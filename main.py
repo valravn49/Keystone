@@ -1,8 +1,8 @@
-import os, json, sqlite3, asyncio, random, pytz, logging
-from datetime import datetime, timedelta
+import os, json, sqlite3, asyncio, random, pytz
+from datetime import datetime, timedelta, time as dtime
 from pathlib import Path
 from typing import Dict, Any, List
-from fastapi import FastAPI
+from fastapi import FastAPI, Body
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
@@ -10,258 +10,155 @@ import discord
 from discord.ext import commands
 
 load_dotenv()
-
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
-logger = logging.getLogger("sisters")
-
-ARIA_TOKEN = os.getenv("ARIA_TOKEN")
-SELENE_TOKEN = os.getenv("SELENE_TOKEN")
-CASS_TOKEN = os.getenv("CASS_TOKEN")
-IVY_TOKEN = os.getenv("IVY_TOKEN")
-FAMILY_CHANNEL_ID = int(os.getenv("FAMILY_CHANNEL_ID", "0") or "0")
-PRIMARY_USER_ID = os.getenv("PRIMARY_USER_ID") or None
+TOKENS = {k.split("_")[0].title(): os.getenv(k) for k in ["ARIA_TOKEN","SELENE_TOKEN","CASS_TOKEN","IVY_TOKEN"]}
+FAMILY_CHANNEL_ID = int(os.getenv("FAMILY_CHANNEL_ID", "0"))
 TZ = pytz.timezone(os.getenv("TZ", "Australia/Melbourne"))
-DISABLE_DISCORD = os.getenv("DISABLE_DISCORD", "1") == "1"  # default to 1 for Railway test
-PORT = int(os.getenv("PORT", "8080"))
-DB_PATH = Path(os.getenv("DATABASE_FILE", "sisters.db"))
-SCHEMA_PATH = Path("db/schema.sql")
+DB_URL = os.getenv("DATABASE_URL", "sqlite:///./sisters.db")
+DB_PATH = Path(DB_URL.replace("sqlite:///", "")) if DB_URL.startswith("sqlite:///") else Path("sisters.db")
+SISTER_ORDER = ["Aria","Selene","Cassandra","Ivy"]
 
-SISTER_ORDER = ["Aria", "Selene", "Cassandra", "Ivy"]
-TOKENS = {"Aria": ARIA_TOKEN, "Selene": SELENE_TOKEN, "Cassandra": CASS_TOKEN, "Ivy": IVY_TOKEN}
-
-intents = discord.Intents.default()
-intents.message_content = True
-bots: Dict[str, commands.Bot] = {}
-
-def make_bot(name: str) -> commands.Bot:
-    b = commands.Bot(command_prefix="!", intents=intents)
-    @b.event
-    async def on_ready():
-        try:
-            await b.tree.sync()
-        except Exception as e:
-            logger.warning("Slash sync failed for %s: %s", name, e)
-        logger.info("%s logged in as %s", name, b.user)
-    @b.tree.command(name=f"ping_{name.lower()}", description=f"Ping {name}")
-    async def ping_cmd(interaction: discord.Interaction):
-        await interaction.response.send_message(f"{name} here — steady and listening.", ephemeral=True)
-    return b
-
-async def sister_send(name: str, channel_id: int, msg: str):
-    b = bots.get(name)
-    if not b:
-        logger.warning("Bot %s not running; skipping send.", name)
-        return
-    try:
-        ch = b.get_channel(channel_id) or await b.fetch_channel(channel_id)
-        await ch.send(msg)
-    except Exception as e:
-        logger.error("Send failed for %s: %s", name, e)
-
-app = FastAPI()
-scheduler = AsyncIOScheduler(timezone=str(TZ))
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS rotations (date TEXT PRIMARY KEY, lead TEXT, rest TEXT, supports_json TEXT);
+CREATE TABLE IF NOT EXISTS themes (week_start TEXT PRIMARY KEY, theme TEXT);
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, kind TEXT, payload TEXT);
+CREATE TABLE IF NOT EXISTS sisters (name TEXT PRIMARY KEY, token TEXT, channel_id TEXT);
+CREATE TABLE IF NOT EXISTS persona (name TEXT PRIMARY KEY, traits_json TEXT, bounds_json TEXT, last_update TEXT);
+CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, sister TEXT, ts TEXT, kind TEXT, content TEXT);
+CREATE TABLE IF NOT EXISTS feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, sister TEXT, signal TEXT, weight REAL DEFAULT 1.0);
+"""
 
 def db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH); conn.row_factory = sqlite3.Row; return conn
 
 def init_db():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if SCHEMA_PATH.exists():
-        with db() as conn, open(SCHEMA_PATH, "r", encoding="utf-8") as f:
-            conn.executescripts(f.read()) if hasattr(conn, "executescripts") else conn.executescript(f.read())
+    with db() as conn: conn.executescript(SCHEMA_SQL)
     seed_if_empty()
 
 def seed_if_empty():
     today = datetime.now(TZ).date()
     week_monday = today - timedelta(days=today.weekday())
-    next7 = [today + timedelta(days=i) for i in range(7)]
     with db() as conn:
-        cur = conn.execute("SELECT COUNT(*) c FROM themes")
-        if cur.fetchone()["c"] == 0:
-            conn.execute("INSERT INTO themes (week_start, theme) VALUES (?,?)", (week_monday.isoformat(), "bratty"))
-        for i, d in enumerate(next7):
-            c = conn.execute("SELECT 1 FROM rotations WHERE date=?", (d.isoformat(),)).fetchone()
-            if not c:
-                lead = SISTER_ORDER[(i + 2) % 4]
-                rest = SISTER_ORDER[(SISTER_ORDER.index(lead) + 1) % 4]
-                supports = [s for s in SISTER_ORDER if s not in (lead, rest)]
-                conn.execute("INSERT INTO rotations (date, lead, rest, supports_json) VALUES (?,?,?,?)",
-                             (d.isoformat(), lead, rest, json.dumps(supports)))
-        for name in SISTER_ORDER:
-            c = conn.execute("SELECT 1 FROM sisters WHERE name=?", (name,)).fetchone()
-            if not c:
-                conn.execute("INSERT INTO sisters (name, token, channel_id) VALUES (?,?,?)",
-                             (name, "", str(FAMILY_CHANNEL_ID)))
-        defaults = {
-            "Aria": {"warmth":0.7,"strictness":0.4,"playfulness":0.2,"formality":0.6,"risk_tolerance":0.2},
-            "Selene":{"warmth":0.85,"strictness":0.25,"playfulness":0.3,"formality":0.5,"risk_tolerance":0.15},
-            "Cassandra":{"warmth":0.55,"strictness":0.6,"playfulness":0.15,"formality":0.8,"risk_tolerance":0.1},
-            "Ivy":{"warmth":0.6,"strictness":0.35,"playfulness":0.75,"formality":0.35,"risk_tolerance":0.35}
-        }
-        bounds = {"warmth":{"min":0.4,"max":0.95},"strictness":{"min":0.2,"max":0.8},
-                  "playfulness":{"min":0.1,"max":0.9},"formality":{"min":0.2,"max":0.9},
-                  "risk_tolerance":{"min":0.05,"max":0.6}}
-        for name, traits in defaults.items():
-            c = conn.execute("SELECT 1 FROM persona WHERE name=?", (name,)).fetchone()
-            if not c:
-                conn.execute("INSERT INTO persona (name, traits_json, bounds_json, last_update) VALUES (?,?,?,?)",
-                             (name, json.dumps(traits), json.dumps(bounds), datetime.now(TZ).isoformat()))
+        conn.execute("INSERT OR IGNORE INTO themes (week_start, theme) VALUES (?,?)",(week_monday.isoformat(),"bratty"))
+        for i in range(7):
+            d = (today + timedelta(days=i)).isoformat()
+            row = conn.execute("SELECT 1 FROM rotations WHERE date=?", (d,)).fetchone()
+            if not row:
+                lead = SISTER_ORDER[(i+2)%4]; rest = SISTER_ORDER[(SISTER_ORDER.index(lead)+1)%4]
+                supports = [s for s in SISTER_ORDER if s not in (lead,rest)]
+                conn.execute("INSERT INTO rotations (date,lead,rest,supports_json) VALUES (?,?,?,?)",(d,lead,rest,json.dumps(supports)))
+        for s in SISTER_ORDER:
+            conn.execute("INSERT OR IGNORE INTO sisters (name, token, channel_id) VALUES (?,?,?)",(s,"",str(FAMILY_CHANNEL_ID)))
+            if not conn.execute("SELECT 1 FROM persona WHERE name=?", (s,)).fetchone():
+                traits={"warmth":0.7,"strictness":0.4,"playfulness":0.3,"formality":0.6,"risk_tolerance":0.2}
+                bounds={"warmth":{"min":0.4,"max":0.95},"strictness":{"min":0.2,"max":0.8},"playfulness":{"min":0.1,"max":0.9},"formality":{"min":0.2,"max":0.9},"risk_tolerance":{"min":0.05,"max":0.6}}
+                conn.execute("INSERT INTO persona (name,traits_json,bounds_json,last_update) VALUES (?,?,?,?)",(s,json.dumps(traits),json.dumps(bounds),datetime.now(TZ).isoformat()))
 
 def get_today_rotation():
     today = datetime.now(TZ).date().isoformat()
     with db() as conn:
-        row = conn.execute("SELECT * FROM rotations WHERE date=?", (today,)).fetchone()
-        if not row:
-            return {"date": today, "lead": "Cassandra", "rest": "Selene", "supports": ["Aria", "Ivy"]}
-        return {"date": row["date"], "lead": row["lead"], "rest": row["rest"], "supports": json.loads(row["supports_json"])}
+        r = conn.execute("SELECT * FROM rotations WHERE date=?", (today,)).fetchone()
+    if not r: return {"date":today,"lead":"Cassandra","rest":"Selene","supports":["Aria","Ivy"]}
+    return {"date":r["date"],"lead":r["lead"],"rest":r["rest"],"supports":json.loads(r["supports_json"])}
 
 def get_current_theme():
-    today = datetime.now(TZ).date()
-    with db() as conn:
-        rows = conn.execute("SELECT week_start, theme FROM themes").fetchall()
-    chosen, latest = "bratty", None
+    today = datetime.now(TZ).date(); chosen, latest="bratty", None
+    with db() as conn: rows = conn.execute("SELECT * FROM themes").fetchall()
     for r in rows:
         ws = datetime.fromisoformat(r["week_start"]).date()
-        if ws <= today and (latest is None or ws > latest):
-            latest = ws; chosen = r["theme"]
+        if ws<=today and (latest is None or ws>latest): latest=ws; chosen=r["theme"]
     return chosen
 
-def load_traits(name: str):
-    with db() as conn:
-        row = conn.execute("SELECT traits_json FROM persona WHERE name=?", (name,)).fetchone()
-    return json.loads(row["traits_json"]) if row else {}
-
-def save_traits(name: str, traits: dict):
-    with db() as conn:
-        conn.execute("UPDATE persona SET traits_json=?, last_update=? WHERE name=?",
-                     (json.dumps(traits), datetime.now(TZ).isoformat(), name))
-
-def load_bounds(name: str):
-    with db() as conn:
-        row = conn.execute("SELECT bounds_json FROM persona WHERE name=?", (name,)).fetchone()
-    return json.loads(row["bounds_json"]) if row else {}
-
-def log_event(kind: str, payload: dict):
-    with db() as conn:
-        conn.execute("INSERT INTO events (ts, kind, payload) VALUES (?,?,?)",
-                     (datetime.now(TZ).isoformat(), kind, json.dumps(payload)))
-
-def add_memory(name: str, kind: str, content: str):
-    with db() as conn:
-        conn.execute("INSERT INTO memories (sister, ts, kind, content) VALUES (?,?,?,?)",
-                     (name, datetime.now(TZ).isoformat(), kind, content))
-
-def style_from_traits(t: dict):
-    return {
-        "emoji_level": "low" if t.get("formality", 0.5) > 0.6 else "medium",
-        "use_petnames": t.get("warmth", 0.5) > 0.6,
-        "short_commands": t.get("strictness", 0.5) > 0.6,
-        "tease_line": t.get("playfulness", 0.4) > 0.5
-    }
-
 def pick_focuses(k=2):
-    options = ["plug training", "depth & sustainment", "anal masturbation/denial", "oral obedience", "corrections"]
-    import random as _r
-    return _r.sample(options, k=k)
+    import random; options=["plug training","depth & sustainment","anal masturbation/denial","oral obedience","corrections"]
+    return ", ".join(random.sample(options,k=k))
 
-def compose_morning_for(sister: str):
-    rot = get_today_rotation()
-    theme = get_current_theme()
-    focuses = ", ".join(pick_focuses(2))
-    anchors = "Chastity log, skincare AM/PM, evening journal"
-    t = style_from_traits(load_traits(sister))
-    pet = "love" if t["use_petnames"] else ""
-    tease = " (behave 😉)" if t["tease_line"] else ""
-    header = "🌅 **Good morning**"
-    line = (f"{header}\n"
+def compose_morning(sister):
+    rot, theme = get_today_rotation(), get_current_theme()
+    anchors="Chastity log, skincare AM/PM, evening journal"
+    return (f"ð **Good morning â {sister}**\n"
             f"Lead: **{rot['lead']}** | Rest: {rot['rest']} | Support: {', '.join(rot['supports'])}\n"
-            f"Theme: *{theme}*\n"
-            f"Anchors: {anchors}\n"
-            f"Focuses today: {focuses}\n"
+            f"Theme: *{theme}*\nAnchors: {anchors}\nFocuses today: {pick_focuses(2)}\n"
             f"Reminders: only formal outfits & training gear are logged; underwear/loungewear stay private. "
-            f"Get out of bed promptly and log the time. Overnight plug check-in if planned.")
-    if pet or tease:
-        line += f"\n{pet}{tease}"
-    return line
+            f"Get out of bed promptly and log the time.")
 
-def compose_evening_for(sister: str):
-    rot = get_today_rotation()
-    theme = get_current_theme()
-    t = style_from_traits(load_traits(sister))
-    pet = "sweetheart" if t["use_petnames"] else ""
-    header = "🌙 **Good night**"
-    line = (f"{header}\n"
-            f"Thanks to supporters ({', '.join(rot['supports'])}); rest well to {rot['rest']}. "
-            f"One short reflection, please.\n"
-            f"Theme reminder: *{theme}*. Did you rise promptly at 6:00? Mark success/slip.")
-    if pet:
-        line += f"\nSleep well, {pet}."
-    return line
+def compose_evening(sister):
+    rot, theme = get_today_rotation(), get_current_theme()
+    return (f"ð **Good night â {sister}**\nThanks to supporters ({', '.join(rot['supports'])}); rest well to {rot['rest']}. "
+            f"One short reflection, please.\nTheme reminder: *{theme}*. Did you rise promptly at 6:00? Mark success/slip.")
+
+intents = discord.Intents.default(); intents.message_content=True
+bots: Dict[str, commands.Bot] = {}
+def make_bot(name):
+    b = commands.Bot(command_prefix="!", intents=intents)
+    @b.event
+    async def on_ready():
+        try: await b.tree.sync()
+        except Exception as e: print(f"{name} slash sync error: {e}")
+        print(f"{name} logged in as {b.user}")
+    @b.tree.command(name=f"ping_{name.lower()}")
+    async def ping(interaction: discord.Interaction): await interaction.response.send_message(f"{name} here â steady.", ephemeral=True)
+    @b.tree.command(name=f"say_{name.lower()}")
+    async def say(interaction: discord.Interaction, message: str):
+        ch = b.get_channel(FAMILY_CHANNEL_ID) or await b.fetch_channel(FAMILY_CHANNEL_ID); await ch.send(f"{name}: {message}")
+        await interaction.response.send_message("Sent.", ephemeral=True)
+    @b.tree.command(name=f"status_{name.lower()}")
+    async def status(interaction: discord.Interaction):
+        r, t = get_today_rotation(), get_current_theme()
+        await interaction.response.send_message(f"ð {r['date']} â Lead: **{r['lead']}** | Rest: {r['rest']} | Support: {', '.join(r['supports'])} â¢ Theme: *{t}*", ephemeral=True)
+    @b.tree.command(name=f"wake_{name.lower()}")
+    async def wake(interaction: discord.Interaction, hhmm: str):
+        ok, note = log_wake_time(hhmm); await interaction.response.send_message(note, ephemeral=True)
+    return b
+
+async def sister_send(name, channel_id, msg):
+    b = bots.get(name); 
+    if not b: return
+    ch = b.get_channel(channel_id) or await b.fetch_channel(channel_id); await ch.send(msg)
+
+scheduler = AsyncIOScheduler(timezone=str(TZ))
+app = FastAPI()
+
+def log_wake_time(hhmm:str):
+    try: h,m = map(int, hhmm.split(":")); wake=dtime(hour=h, minute=m)
+    except: return False, "Format must be HH:MM"
+    six=dtime(6,0); success = wake<=six
+    with db() as conn: conn.execute("INSERT INTO events (ts, kind, payload) VALUES (?,?,?)",(datetime.now(TZ).isoformat(),"wake",json.dumps({"time":hhmm,"success":success})))
+    return True, f"Wake time logged: {hhmm} â {'success' if success else 'slip'}."
 
 async def post_morning():
-    rot = get_today_rotation()
-    lead = rot['lead']
-    msg = compose_morning_for(lead)
-    if not DISABLE_DISCORD and FAMILY_CHANNEL_ID:
-        await sister_send(lead, FAMILY_CHANNEL_ID, msg)
-    log_event("morning_msg", {"by": lead, "message": msg})
-    for s in rot["supports"]:
-        await asyncio.sleep(2)
-        reply = compose_evening_for(s) if False else f"{s} standing by. Theme: *{get_current_theme()}*."
-        if not DISABLE_DISCORD and FAMILY_CHANNEL_ID:
-            await sister_send(s, FAMILY_CHANNEL_ID, reply)
-        add_memory(s, "message", reply)
+    r = get_today_rotation(); msg = compose_morning(r['lead']); await sister_send(r['lead'], FAMILY_CHANNEL_ID, msg)
+    for s in r["supports"]:
+        await asyncio.sleep(1); await sister_send(s, FAMILY_CHANNEL_ID, f"{s}: Theme is *{get_current_theme()}*. Holding you up.")
 
 async def post_evening():
-    rot = get_today_rotation()
-    lead = rot['lead']
-    msg = compose_evening_for(lead)
-    if not DISABLE_DISCORD and FAMILY_CHANNEL_ID:
-        await sister_send(lead, FAMILY_CHANNEL_ID, msg)
-    log_event("evening_msg", {"by": lead, "message": msg})
+    r = get_today_rotation(); msg = compose_evening(r['lead']); await sister_send(r['lead'], FAMILY_CHANNEL_ID, msg)
 
 @app.on_event("startup")
 async def startup():
     init_db()
-    if not DISABLE_DISCORD:
-        for name, token in TOKENS.items():
-            if not token:
-                logger.warning("No token for %s; bot not started.", name)
-                continue
-            try:
-                b = make_bot(name)
-                bots[name] = b
-                asyncio.create_task(b.start(token))
-            except Exception as e:
-                logger.error("Failed to start bot %s: %s", name, e)
-    scheduler.add_job(lambda: asyncio.create_task(post_morning()), CronTrigger(hour=6, minute=0, timezone=TZ), id="morning")
-    scheduler.add_job(lambda: asyncio.create_task(post_evening()), CronTrigger(hour=22, minute=0, timezone=TZ), id="evening")
+    for name, token in TOKENS.items():
+        if token:
+            bots[name]=make_bot(name); asyncio.create_task(bots[name].start(token))
+        else:
+            print(f"Warning: no token for {name}")
+    scheduler.add_job(lambda: asyncio.create_task(post_morning()), CronTrigger(hour=6, minute=0, timezone=TZ), id="morning", replace_existing=True)
+    scheduler.add_job(lambda: asyncio.create_task(post_evening()), CronTrigger(hour=22, minute=0, timezone=TZ), id="evening", replace_existing=True)
+    scheduler.add_job(lambda: set_next_monday_theme(), CronTrigger(day_of_week="mon", hour=0, minute=5, timezone=TZ), id="theme_rotate", replace_existing=True)
     scheduler.start()
-    logger.info("Startup complete. HTTP on port %s", PORT)
 
 @app.get("/health")
-def health():
-    return {"ok": True, "time": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S %Z")}
-
-@app.get("/debug")
-def debug():
-    return {
-        "discord_disabled": DISABLE_DISCORD,
-        "family_channel_id": FAMILY_CHANNEL_ID,
-        "bots_started": [name for name, token in TOKENS.items() if token],
-        "db_path": str(DB_PATH),
-        "tz": str(TZ)
-    }
+def health(): return {"ok": True}
 
 @app.post("/trigger/morning")
-async def trigger_morning():
-    await post_morning()
-    return {"status": "posted"}
-
+async def trigger_morning(): await post_morning(); return {"status":"posted"}
 @app.post("/trigger/evening")
-async def trigger_evening():
-    await post_evening()
-    return {"status": "posted"}
+async def trigger_evening(): await post_evening(); return {"status":"posted"}
+
+def set_next_monday_theme():
+    today=datetime.now(TZ).date(); next_mon=today - timedelta(days=today.weekday()) + timedelta(days=7)
+    cycle=["bratty","soft","crossdressing","skincare"]; cur=get_current_theme(); nxt=cycle[(cycle.index(cur)+1)%len(cycle)] if cur in cycle else cycle[0]
+    with db() as conn:
+        conn.execute("INSERT OR REPLACE INTO themes (week_start, theme) VALUES (?,?)",(next_mon.isoformat(),nxt))
+        conn.execute("INSERT INTO events (ts, kind, payload) VALUES (?,?,?)",(datetime.now(TZ).isoformat(),"theme_rotation",json.dumps({"week_start":next_mon.isoformat(),"theme":nxt})))
