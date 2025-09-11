@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+discord.py
+apscheduler
+python-dotenv
+pytz
+openai
