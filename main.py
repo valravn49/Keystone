@@ -25,53 +25,7 @@ TZ = pytz.timezone(os.getenv("TZ", "Australia/Melbourne"))
 PORT = int(os.getenv("PORT", "8080"))
 DB_PATH = Path(os.getenv("DATABASE_FILE", "sisters.db"))
 SCHEMA_PATH = Path("db/schema.sql")# --- Inline fallback schema in case db/schema.sql isn't present in the container ---
-SCHEMA_SQL_FALLBACK = """
-CREATE TABLE IF NOT EXISTS rotations (
-  date TEXT PRIMARY KEY,
-  lead TEXT NOT NULL,
-  rest TEXT NOT NULL,
-  supports_json TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS themes (
-  week_start TEXT PRIMARY KEY,
-  theme TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS settings (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  ts TEXT NOT NULL,
-  kind TEXT NOT NULL,
-  payload TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS sisters (
-  name TEXT PRIMARY KEY,
-  token TEXT,
-  channel_id TEXT
-);
-CREATE TABLE IF NOT EXISTS persona (
-  name TEXT PRIMARY KEY,
-  traits_json TEXT NOT NULL,
-  bounds_json TEXT NOT NULL,
-  last_update TEXT
-);
-CREATE TABLE IF NOT EXISTS memories (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  sister TEXT NOT NULL,
-  ts TEXT NOT NULL,
-  kind TEXT NOT NULL,
-  content TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS feedback (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  ts TEXT NOT NULL,
-  sister TEXT NOT NULL,
-  signal TEXT NOT NULL,
-  weight REAL DEFAULT 1.0
-);
-"""
+
 SISTER_ORDER = ["Aria", "Selene", "Cassandra", "Ivy"]
 TOKENS = {"Aria": ARIA_TOKEN, "Selene": SELENE_TOKEN, "Cassandra": CASS_TOKEN, "Ivy": IVY_TOKEN}
 
