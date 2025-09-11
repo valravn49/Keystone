@@ -25,7 +25,109 @@ TZ = pytz.timezone(os.getenv("TZ", "Australia/Melbourne"))
 PORT = int(os.getenv("PORT", "8080"))
 DB_PATH = Path(os.getenv("DATABASE_FILE", "sisters.db"))
 SCHEMA_PATH = Path("db/schema.sql")
-
+    init_db()
+  File "/app/main.py", line 74, in init_db
+    seed_if_empty()
+  File "/app/main.py", line 93, in seed_if_empty
+    c = conn.execute("SELECT 1 FROM sisters WHERE name=?", (name,)).fetchone()
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sqlite3.OperationalError: no such table: sisters
+ERROR:    Application startup failed. Exiting.
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+ERROR:    Traceback (most recent call last):
+  File "/opt/venv/lib/python3.12/site-packages/starlette/routing.py", line 694, in lifespan
+    async with self.lifespan_context(app) as maybe_state:
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/venv/lib/python3.12/site-packages/starlette/routing.py", line 571, in __aenter__
+    await self._router.startup()
+  File "/opt/venv/lib/python3.12/site-packages/starlette/routing.py", line 671, in startup
+    await handler()
+  File "/app/main.py", line 227, in startup
+    init_db()
+  File "/app/main.py", line 74, in init_db
+    seed_if_empty()
+  File "/app/main.py", line 93, in seed_if_empty
+    c = conn.execute("SELECT 1 FROM sisters WHERE name=?", (name,)).fetchone()
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sqlite3.OperationalError: no such table: sisters
+ERROR:    Application startup failed. Exiting.
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+ERROR:    Traceback (most recent call last):
+  File "/opt/venv/lib/python3.12/site-packages/starlette/routing.py", line 694, in lifespan
+    async with self.lifespan_context(app) as maybe_state:
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/venv/lib/python3.12/site-packages/starlette/routing.py", line 571, in __aenter__
+    await self._router.startup()
+  File "/opt/venv/lib/python3.12/site-packages/starlette/routing.py", line 671, in startup
+    await handler()
+  File "/app/main.py", line 227, in startup
+    init_db()
+  File "/app/main.py", line 74, in init_db
+    seed_if_empty()
+  File "/app/main.py", line 93, in seed_if_empty
+    c = conn.execute("SELECT 1 FROM sisters WHERE name=?", (name,)).fetchone()
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sqlite3.OperationalError: no such table: sisters
+ERROR:    Application startup failed. Exiting.
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+ERROR:    Traceback (most recent call last):
+  File "/opt/venv/lib/python3.12/site-packages/starlette/routing.py", line 694, in lifespan
+    async with self.lifespan_context(app) as maybe_state:
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/venv/lib/python3.12/site-packages/starlette/routing.py", line 571, in __aenter__
+    await self._router.startup()
+  File "/opt/venv/lib/python3.12/site-packages/starlette/routing.py", line 671, in startup
+    await handler()
+  File "/app/main.py", line 227, in startup
+    init_db()
+  File "/app/main.py", line 74, in init_db
+    seed_if_empty()
+  File "/app/main.py", line 93, in seed_if_empty
+    c = conn.execute("SELECT 1 FROM sisters WHERE name=?", (name,)).fetchone()
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sqlite3.OperationalError: no such table: sisters
+ERROR:    Application startup failed. Exiting.
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+ERROR:    Traceback (most recent call last):
+  File "/opt/venv/lib/python3.12/site-packages/starlette/routing.py", line 694, in lifespan
+    async with self.lifespan_context(app) as maybe_state:
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/venv/lib/python3.12/site-packages/starlette/routing.py", line 571, in __aenter__
+    await self._router.startup()
+  File "/opt/venv/lib/python3.12/site-packages/starlette/routing.py", line 671, in startup
+    await handler()
+  File "/app/main.py", line 227, in startup
+    init_db()
+  File "/app/main.py", line 74, in init_db
+    seed_if_empty()
+  File "/app/main.py", line 93, in seed_if_empty
+    c = conn.execute("SELECT 1 FROM sisters WHERE name=?", (name,)).fetchone()
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sqlite3.OperationalError: no such table: sisters
+ERROR:    Application startup failed. Exiting.
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+ERROR:    Traceback (most recent call last):
+  File "/opt/venv/lib/python3.12/site-packages/starlette/routing.py", line 694, in lifespan
+    async with self.lifespan_context(app) as maybe_state:
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/venv/lib/python3.12/site-packages/starlette/routing.py", line 571, in __aenter__
+    await self._router.startup()
+  File "/opt/venv/lib/python3.12/site-packages/starlette/routing.py", line 671, in startup
+    await handler()
+  File "/app/main.py", line 227, in startup
+    init_db()
+  File "/app/main.py", line 74, in init_db
+    seed_if_empty()
+  File "/app/main.py", line 93, in seed_if_empty
+    c = conn.execute("SELECT 1 FROM sisters WHERE name=?", (name,)).fetchone()
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sqlite3.OperationalError: no such table: sisters
+ERROR:    Application startup failed. Exiting.
 SISTER_ORDER = ["Aria", "Selene", "Cassandra", "Ivy"]
 TOKENS = {"Aria": ARIA_TOKEN, "Selene": SELENE_TOKEN, "Cassandra": CASS_TOKEN, "Ivy": IVY_TOKEN}
 
