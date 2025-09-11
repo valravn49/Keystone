@@ -22,7 +22,6 @@ IVY_TOKEN = os.getenv("IVY_TOKEN")
 FAMILY_CHANNEL_ID = int(os.getenv("FAMILY_CHANNEL_ID", "0") or "0")
 PRIMARY_USER_ID = os.getenv("PRIMARY_USER_ID") or None
 TZ = pytz.timezone(os.getenv("TZ", "Australia/Melbourne"))
-DISABLE_DISCORD = os.getenv("DISABLE_DISCORD", "1") == "1"  # default to 1 for Railway test
 PORT = int(os.getenv("PORT", "8080"))
 DB_PATH = Path(os.getenv("DATABASE_FILE", "sisters.db"))
 SCHEMA_PATH = Path("db/schema.sql")
