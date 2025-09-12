@@ -1,10 +1,11 @@
 import os
 import sqlite3
-import asyncio
+import threading
 import discord
 from discord.ext import commands
 from fastapi import FastAPI
 import uvicorn
+import asyncio
 
 DB_PATH = "bot.db"
 intents = discord.Intents.default()
@@ -77,6 +78,9 @@ class SisterBot(commands.Bot):
                 f"{self.sister_name} ({self.personality}): I hear you, {message.author.name}!"
             )
 
+def start_api():
+    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")
+
 async def run_bots():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -86,21 +90,13 @@ async def run_bots():
 
     tasks = []
     for name, personality, token in sisters:
-        if token:  # make sure token isn’t None
+        if token:
             bot = SisterBot(name, personality, command_prefix="!", intents=intents)
             tasks.append(bot.start(token))
+    await asyncio.gather(*tasks)
 
-    if tasks:
-        await asyncio.gather(*tasks)
-
-# === Entrypoint ===
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-
-    # Run uvicorn in a background task
-    config = uvicorn.Config(app, host="0.0.0.0", port=8080, log_level="info")
-    server = uvicorn.Server(config)
-    loop.create_task(server.serve())
-
-    # Run Discord bots in the same loop
-    loop.run_until_complete(run_bots())
+    # Start FastAPI in its own thread
+    threading.Thread(target=start_api, daemon=True).start()
+    # Run Discord bots in main loop
+    asyncio.run(run_bots())
