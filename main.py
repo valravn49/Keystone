@@ -1,211 +1,171 @@
 import os
-import discord
-from discord.ext import tasks
 import asyncio
-import datetime
+from datetime import datetime, timedelta
+from fastapi import FastAPI
+from discord.ext import commands, tasks
+import discord
 import random
-import sqlite3
-import openai
 
-# ============================
-# ENV + CONFIG
-# ============================
-TOKENS = {
-    "aria": os.getenv("ARIA_TOKEN"),
-    "selene": os.getenv("SELENE_TOKEN"),
-    "cassandra": os.getenv("CASSANDRA_TOKEN"),
-    "ivy": os.getenv("IVY_TOKEN"),
-}
+# --------------------
+# FastAPI setup
+# --------------------
+app = FastAPI()
 
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
-openai.api_key = OPENAI_KEY
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
-CHANNEL_ID = int(os.getenv("FAMILY_CHANNEL_ID", "0"))
-PROJECT_INDEX = "Project_Index.txt"
+@app.get("/rotation")
+async def rotation():
+    return {"rotation": "ok"}
 
-# Sister metadata
+@app.get("/birthdays")
+async def birthdays():
+    return {"birthdays": "ok"}
+
+
+# --------------------
+# Sisters & settings
+# --------------------
+intents = discord.Intents.default()
+intents.message_content = True
+
 SISTERS = {
-    "aria": {
-        "name": "Aria",
+    "Aria": {
+        "token": os.getenv("ARIA_TOKEN"),
+        "prompt": "Aria is calm, orderly, and nurturing. She leads with patience and clarity.",
         "dob": "1999-03-20",
-        "personality": "Calm, orderly, thoughtful, nurturing in structure."
     },
-    "selene": {
-        "name": "Selene",
+    "Selene": {
+        "token": os.getenv("SELENE_TOKEN"),
+        "prompt": "Selene is gentle, warm, and supportive. She is soft-spoken but firm when needed.",
         "dob": "2001-07-13",
-        "personality": "Gentle, dreamy, emotionally supportive, protective."
     },
-    "cassandra": {
-        "name": "Cassandra",
+    "Cassandra": {
+        "token": os.getenv("CASSANDRA_TOKEN"),
+        "prompt": "Cassandra is strict, commanding, and proud. She values discipline and control.",
         "dob": "2003-01-01",
-        "personality": "Strict, commanding, high standards, pushes growth."
     },
-    "ivy": {
-        "name": "Ivy",
+    "Ivy": {
+        "token": os.getenv("IVY_TOKEN"),
+        "prompt": "Ivy is playful, bratty, and teasing. She keeps things fun but challenging.",
         "dob": "2006-10-31",
-        "personality": "Playful, bratty, teasing, affectionate mischief."
     },
 }
 
-# Weekly novelty themes cycle
-THEMES = ["bratty", "soft", "crossdressing", "skincare"]
+WEEKLY_THEMES = ["bratty", "soft", "crossdressing", "skincare"]
 theme_index = 0
+rotation_index = 0
+bots = {}
+project_index_file = "/mnt/data/Project_Index.txt"
 
-# Rotation state
-rotation = ["aria", "selene", "cassandra", "ivy"]
-lead_pointer = 0
+# --------------------
+# Helpers
+# --------------------
+def get_today_roles():
+    global rotation_index
+    sisters = list(SISTERS.keys())
+    lead = sisters[rotation_index % 4]
+    rest = sisters[(rotation_index + 1) % 4]
+    support1 = sisters[(rotation_index + 2) % 4]
+    support2 = sisters[(rotation_index + 3) % 4]
+    return lead, rest, [support1, support2]
 
-# Message cooldown tracking
-last_message_time = {s: None for s in SISTERS}
-message_cooldowns = {s: 60 for s in SISTERS}  # seconds
+def get_current_theme():
+    global theme_index
+    return WEEKLY_THEMES[theme_index % len(WEEKLY_THEMES)]
 
-# ============================
-# DB INIT (SQLite)
-# ============================
-def init_db():
-    conn = sqlite3.connect("sisters.db")
-    c = conn.cursor()
-    c.execute(
-        """CREATE TABLE IF NOT EXISTS sisters (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            dob TEXT,
-            personality TEXT
-        )"""
-    )
-    # Seed
-    for key, data in SISTERS.items():
-        c.execute("SELECT 1 FROM sisters WHERE name=?", (data["name"],))
-        if not c.fetchone():
-            c.execute("INSERT INTO sisters (name, dob, personality) VALUES (?, ?, ?)", 
-                      (data["name"], data["dob"], data["personality"]))
-    conn.commit()
-    conn.close()
-
-# ============================
-# Logging helper
-# ============================
-def append_to_project_index(entry: str):
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    with open(PROJECT_INDEX, "a") as f:
-        f.write(f"[{timestamp}] {entry}\n")
-
-# ============================
-# OpenAI Helper
-# ============================
-async def generate_response(sister: str, prompt: str) -> str:
-    personality = SISTERS[sister]["personality"]
+def append_project_log(entry: str):
     try:
-        resp = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": f"You are {SISTERS[sister]['name']}, {personality}"},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=150
-        )
-        return resp["choices"][0]["message"]["content"]
+        with open(project_index_file, "a") as f:
+            f.write(entry + "\n")
+        print("Logged:", entry)
     except Exception as e:
-        return f"(debug) LLM error: {e}"
+        print("Log write failed:", e)
 
-# ============================
-# Rotation + Scheduling
-# ============================
-def get_roles():
-    global lead_pointer
-    lead = rotation[lead_pointer % 4]
-    rest = rotation[(lead_pointer - 1) % 4]
-    support = [s for s in rotation if s not in [lead, rest]]
-    return lead, rest, support
+# --------------------
+# Discord bot creation
+# --------------------
+def create_bot(name, token, prompt):
+    bot = commands.Bot(command_prefix="!", intents=intents)
 
-def advance_rotation():
-    global lead_pointer, theme_index
-    lead_pointer = (lead_pointer + 1) % 4
-    # Mondays -> rotate theme
-    if datetime.datetime.today().weekday() == 0:
-        theme_index = (theme_index + 1) % len(THEMES)
-
-# ============================
-# Multi-bot Clients
-# ============================
-clients = {}
-
-def make_client(sister_key: str):
-    intents = discord.Intents.default()
-    intents.messages = True
-    intents.message_content = True
-    client = discord.Client(intents=intents)
-
-    @client.event
+    @bot.event
     async def on_ready():
-        print(f"{SISTERS[sister_key]['name']} is online.")
+        print(f"{name} logged in as {bot.user}")
 
-    @client.event
+    @bot.event
     async def on_message(message):
-        if message.author == client.user:
+        if message.author == bot.user:
             return
+        if bot.user.mentioned_in(message):
+            await message.channel.send(f"[{name}] {prompt}")
 
-        now = datetime.datetime.now()
-        last = last_message_time[sister_key]
-        if last and (now - last).seconds < message_cooldowns[sister_key]:
-            return
-        last_message_time[sister_key] = now
+    return bot, token
 
-        # Pass message into LLM
-        reply = await generate_response(sister_key, message.content)
-        await message.channel.send(reply, delete_after=60)
+# --------------------
+# Scheduled tasks
+# --------------------
+async def post_rotation_message(bot, channel_id, mode="morning"):
+    lead, rest, support = get_today_roles()
+    theme = get_current_theme()
+    now = datetime.now().strftime("%Y-%m-%d")
 
-    return client
+    if mode == "morning":
+        msg = (
+            f"🌟 Good morning from {lead}! 🌟\n"
+            f"Today’s roles:\n"
+            f"{lead} → 🌟 Lead\n"
+            f"{rest} → 🌙 Rest\n"
+            f"{', '.join(support)} → ✨ Support\n\n"
+            f"📋 Training tasks:\n"
+            f"- Chastity log\n- Skincare (AM+PM)\n- Evening journal\n"
+            f"- Hygiene checklist (cage cleaning, dry, moisturize)\n"
+            f"🎭 Weekly theme: {theme}\n"
+        )
+    else:
+        msg = f"🌙 Good night from {lead}! Don’t forget to journal and log today’s results. 🌙"
 
-# ============================
-# Daily tasks
-# ============================
-async def morning_message():
-    lead, rest, support = get_roles()
-    theme = THEMES[theme_index]
-    client = list(clients.values())[0]  # pick first client to send system messages
-    channel = client.get_channel(CHANNEL_ID)
-    if not channel:
-        print("Channel not found.")
-        return
+    try:
+        channel = bot.get_channel(int(channel_id))
+        if channel:
+            await channel.send(msg)
+            print(f"Posted {mode} message for {lead}")
+        else:
+            print(f"Channel not found for {lead}")
+    except Exception as e:
+        print(f"Error sending {mode} message for {lead}:", e)
 
-    msg = (
-        f"ð Good morning from {SISTERS[lead]['name']}!\n"
-        f"ð Lead: {SISTERS[lead]['name']} | ð Rest: {SISTERS[rest]['name']} | â¨ Support: {', '.join(SISTERS[s]['name'] for s in support)}\n\n"
-        f"Today's novelty theme: **{theme}**."
-    )
-    await channel.send(msg)
-    append_to_project_index(msg)
+    # Log rotation
+    if mode == "morning":
+        entry = f"{now} | Lead: {lead} | Rest: {rest} | Support: {', '.join(support)} | Theme: {theme}"
+        append_project_log(entry)
 
-async def night_message():
-    lead, rest, support = get_roles()
-    client = list(clients.values())[0]
-    channel = client.get_channel(CHANNEL_ID)
-    if not channel:
-        print("Channel not found.")
-        return
+@tasks.loop(hours=24)
+async def daily_rotation():
+    global rotation_index
+    rotation_index += 1
+    if datetime.today().weekday() == 0:  # Monday
+        global theme_index
+        theme_index += 1
+        print("Weekly theme advanced:", get_current_theme())
 
-    msg = (
-        f"ð Good night from {SISTERS[lead]['name']}!\n"
-        f"ð Lead: {SISTERS[lead]['name']} | ð Rest: {SISTERS[rest]['name']} | â¨ Support: {', '.join(SISTERS[s]['name'] for s in support)}"
-    )
-    await channel.send(msg)
-    append_to_project_index(msg)
-    advance_rotation()
-
-# ============================
-# Entrypoint
-# ============================
-if __name__ == "__main__":
-    init_db()
-    for key in TOKENS:
-        if TOKENS[key]:
-            clients[key] = make_client(key)
-
+# --------------------
+# Startup
+# --------------------
+@app.on_event("startup")
+async def startup_event():
     loop = asyncio.get_event_loop()
-    for c in clients.values():
-        loop.create_task(c.start(TOKENS[[k for k, v in clients.items() if v == c][0]]))
 
-    loop.create_task(morning_message())
-    loop.create_task(night_message())
-    loop.run_forever()
+    for sister, data in SISTERS.items():
+        token = data["token"]
+        prompt = data["prompt"]
+
+        if token:
+            bot, token = create_bot(sister, token, prompt)
+            bots[sister] = bot
+            loop.create_task(bot.start(token))
+            print(f"Started bot for {sister}")
+        else:
+            print(f"No token found for {sister}, skipping...")
+
+    daily_rotation.start()
