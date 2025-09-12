@@ -1,123 +1,172 @@
 import os
-import random
-import asyncio
-import time
 import discord
-from discord.ext import commands
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
+import random
+import time
+import asyncio
 import openai
+from fastapi import FastAPI
+from pydantic import BaseModel
+import uvicorn
 
 # --------------------------
-# FastAPI server (healthcheck for Railway)
+# Setup
 # --------------------------
-app = FastAPI()
+intents = discord.Intents.default()
+intents.messages = True
+intents.guilds = True
+intents.message_content = True
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Tokens
+DISCORD_TOKENS = {
+    "Aria": os.getenv("ARIA_TOKEN"),
+    "Selene": os.getenv("SELENE_TOKEN"),
+    "Cassandra": os.getenv("CASSANDRA_TOKEN"),
+    "Ivy": os.getenv("IVY_TOKEN"),
+}
 
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+openai.api_key = OPENAI_KEY
+
+# Create a client per sister
+bots = {}
 
 # --------------------------
-# OpenAI setup
+# Personality Prompts
 # --------------------------
-openai.api_key = os.getenv("OPENAI_API_KEY")
+PERSONALITIES = {
+    "Aria": "You are Aria, calm, orderly, supportive, and maternal.",
+    "Selene": "You are Selene, nurturing, gentle, and thoughtful.",
+    "Cassandra": "You are Cassandra, strict, commanding, and proud.",
+    "Ivy": "You are Ivy, playful, teasing, mischievous, and bratty.",
+}
 
-async def ask_llm(sister_name: str, message: str) -> str:
-    """Send user message + sister persona to OpenAI and return a reply."""
+STYLES = {
+    "Aria": "Soft, structured, kind, with long nurturing replies.",
+    "Selene": "Warm, comforting, thoughtful, empathetic.",
+    "Cassandra": "Confident, strict, concise, authoritative.",
+    "Ivy": "Flirty, chaotic, bratty, short playful bursts.",
+}
+
+# --------------------------
+# Groupchat Memory
+# --------------------------
+CHAT_MEMORY = {}
+MEMORY_LIMIT = 20
+
+def update_memory(channel_id, author, content):
+    if channel_id not in CHAT_MEMORY:
+        CHAT_MEMORY[channel_id] = []
+    CHAT_MEMORY[channel_id].append(f"{author}: {content}")
+    if len(CHAT_MEMORY[channel_id]) > MEMORY_LIMIT:
+        CHAT_MEMORY[channel_id].pop(0)
+
+def get_memory(channel_id):
+    return "\n".join(CHAT_MEMORY.get(channel_id, []))
+
+# --------------------------
+# Reply Settings
+# --------------------------
+SISTER_RULES = {
+    "Aria": {"prob": 0.4, "cooldown": 120},
+    "Selene": {"prob": 0.4, "cooldown": 120},
+    "Cassandra": {"prob": 0.3, "cooldown": 180},
+    "Ivy": {"prob": 0.5, "cooldown": 90},
+}
+
+last_reply_time = {sister: 0 for sister in SISTER_RULES.keys()}
+
+# --------------------------
+# LLM Call
+# --------------------------
+async def ask_llm(sister_name: str, message: str, channel_id: int) -> str:
     personality = PERSONALITIES[sister_name]
+    style = STYLES[sister_name]
+
+    memory_context = ""
+    if random.random() < 0.5:
+        memory_context = f"\nHere is the recent groupchat log:\n{get_memory(channel_id)}"
+
+    if random.random() < 0.3:
+        tag = random.choice([s for s in PERSONALITIES.keys() if s != sister_name])
+        message = f"(Consider addressing {tag} in your reply) " + message
+
     try:
         response = await openai.ChatCompletion.acreate(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": personality},
+                {"role": "system", "content": f"Always write in this style: {style}"},
+                {"role": "system", "content": memory_context},
                 {"role": "user", "content": message},
             ],
-            max_tokens=120,
-            temperature=0.8,
+            max_tokens=180,
+            temperature=0.9,
         )
         return response.choices[0].message["content"].strip()
     except Exception as e:
         return f"(error generating reply: {e})"
 
 # --------------------------
-# Sister personalities & cooldowns
+# Bot Factory
 # --------------------------
-PERSONALITIES = {
-    "Aria": "Aria is calm, orderly, and nurturing. She tracks logs and brings structure, speaking softly but firmly.",
-    "Selene": "Selene is warm, maternal, and comforting. She uses gentle encouragement and affectionate words.",
-    "Cassandra": "Cassandra is strict, commanding, and values discipline. She speaks firmly, with an air of authority.",
-    "Ivy": "Ivy is playful, bratty, and teasing. She flirts, provokes, and uses cheeky humor to keep things fun.",
-}
+def create_bot(sister_name):
+    client = discord.Client(intents=intents)
 
-SISTER_RULES = {
-    "Aria": {"prob": 0.6, "cooldown": 45},      # replies sometimes, moderate cooldown
-    "Selene": {"prob": 0.7, "cooldown": 40},    # replies often, comforting
-    "Cassandra": {"prob": 0.4, "cooldown": 90}, # rare, strict voice
-    "Ivy": {"prob": 0.8, "cooldown": 20},       # bratty, replies a lot
-}
+    @client.event
+    async def on_ready():
+        print(f"{sister_name} is online as {client.user}")
 
-# Track last reply times
-last_reply_time = {s: 0 for s in SISTER_RULES.keys()}
+    @client.event
+    async def on_message(message):
+        if message.author.bot:
+            return
 
-# --------------------------
-# Discord setup
-# --------------------------
-intents = discord.Intents.default()
-intents.messages = True
-intents.message_content = True
+        update_memory(message.channel.id, message.author.name, message.content)
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+        now = time.time()
+        rules = SISTER_RULES[sister_name]
 
-@bot.event
-async def on_ready():
-    print(f"{bot.user} is now online!")
+        if now - last_reply_time[sister_name] < rules["cooldown"]:
+            return
 
-@bot.event
-async def on_message(message):
-    if message.author.bot:
-        return
-
-    now = time.time()
-    sisters_to_reply = []
-
-    for sister, rules in SISTER_RULES.items():
-        # respect cooldown
-        if now - last_reply_time[sister] < rules["cooldown"]:
-            continue
-        # decide if she replies
         if random.random() < rules["prob"]:
-            sisters_to_reply.append(sister)
+            await asyncio.sleep(random.randint(2, 5))
+            reply = await ask_llm(sister_name, message.content, message.channel.id)
+            await message.channel.send(f"**{sister_name}**: {reply}")
+            last_reply_time[sister_name] = time.time()
+            update_memory(message.channel.id, sister_name, reply)
 
-    delay = 0
-    for sister in sisters_to_reply:
-        asyncio.create_task(delayed_reply(sister, message, delay))
-        delay += random.randint(2, 4)  # stagger replies naturally
-
-async def delayed_reply(sister_name, message, delay):
-    global last_reply_time
-    await asyncio.sleep(delay)
-    reply = await ask_llm(sister_name, message.content)
-    await message.channel.send(f"**{sister_name}:** {reply}")
-    last_reply_time[sister_name] = time.time()
+    return client
 
 # --------------------------
-# Run both Discord and FastAPI
+# FastAPI
 # --------------------------
-async def main():
-    discord_task = asyncio.create_task(bot.start(os.getenv("DISCORD_TOKEN")))
-    api_task = asyncio.create_task(
-        uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")
-    )
-    await asyncio.gather(discord_task, api_task)
+app = FastAPI()
 
+class Msg(BaseModel):
+    content: str
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+@app.post("/send")
+async def send_message(msg: Msg):
+    for client in bots.values():
+        for channel in client.get_all_channels():
+            if channel.name == "general":
+                await channel.send(msg.content)
+    return {"status": "sent"}
+
+# --------------------------
+# Run all bots
+# --------------------------
 if __name__ == "__main__":
-    asyncio.run(main())
+    loop = asyncio.get_event_loop()
+    for sister, token in DISCORD_TOKENS.items():
+        if token:
+            bot = create_bot(sister)
+            bots[sister] = bot
+            loop.create_task(bot.start(token))
+
+    uvicorn.run(app, host="0.0.0.0", port=8080)
