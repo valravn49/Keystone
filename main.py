@@ -1,57 +1,101 @@
 import os
 import discord
 import asyncio
-import sqlite3
-from datetime import datetime
+import datetime
+from fastapi import FastAPI
+import uvicorn
 
-# Timestamped logger
-def log(msg):
-    print(f"[{datetime.utcnow().isoformat()} UTC] {msg}")
+# Discord intents
+intents = discord.Intents.default()
+intents.messages = True
+intents.guilds = True
 
-# Database init
-def init_db():
-    log("Initializing database...")
-    conn = sqlite3.connect("sisters.db")
-    c = conn.cursor()
-    c.execute("CREATE TABLE IF NOT EXISTS sisters (id INTEGER PRIMARY KEY, name TEXT, dob TEXT)")
-    conn.commit()
-    conn.close()
-    log("Database initialized.")
+# Sister tokens from env
+SISTERS = {
+    "Aria": {
+        "token": os.getenv("ARIA_TOKEN"),
+        "dob": "1999-03-20",
+    },
+    "Selene": {
+        "token": os.getenv("SELENE_TOKEN"),
+        "dob": "2001-07-13",
+    },
+    "Cassandra": {
+        "token": os.getenv("CASSANDRA_TOKEN"),
+        "dob": "2003-01-01",
+    },
+    "Ivy": {
+        "token": os.getenv("IVY_TOKEN"),
+        "dob": "2006-10-31",
+    },
+}
 
-# Sister bot setup
-class SisterBot(discord.Client):
-    def __init__(self, name, token, **kwargs):
-        super().__init__(**kwargs)
-        self.name = name
-        self.token = token
+# Role cycle order
+ROLE_ORDER = ["Lead", "Rest", "Support"]
 
-    async def on_ready(self):
-        log(f"{self.name} logged in as {self.user}")
+# Store client objects
+clients = {}
 
-# Run all sisters
-async def run_sisters():
-    sisters = [
-        ("Aria", os.getenv("ARIA_TOKEN")),
-        ("Selene", os.getenv("SELENE_TOKEN")),
-        ("Cassandra", os.getenv("CASS_TOKEN")),
-        ("Ivy", os.getenv("IVY_TOKEN"))
-    ]
+# Create FastAPI app
+app = FastAPI()
 
-    clients = []
-    for name, token in sisters:
-        if not token:
-            log(f"Token for {name} is missing! Skipping.")
-            continue
-        client = SisterBot(name, token, intents=discord.Intents.default())
-        clients.append((client, token))
-        log(f"Prepared bot for {name}")
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
-    await asyncio.gather(*[c.start(t) for c, t in clients])
+@app.get("/debug/status")
+async def debug_status():
+    today = datetime.date.today()
+    # Pick which sister is Lead based on day of year
+    names = list(SISTERS.keys())
+    lead_index = today.toordinal() % len(names)  # cycles through sisters
+    roles = {}
+
+    for i, name in enumerate(names):
+        # Distance from the lead sister
+        dist = (i - lead_index) % len(names)
+        role = ROLE_ORDER[dist % len(ROLE_ORDER)]
+        client = clients.get(name)
+        roles[name] = {
+            "dob": SISTERS[name]["dob"],
+            "role": role,
+            "connection": "online" if client and client.is_ready() else "offline"
+        }
+
+    return roles
+
+# Function to create a bot for each sister
+def create_bot(name, token):
+    client = discord.Client(intents=intents)
+
+    @client.event
+    async def on_ready():
+        print(f"[{datetime.datetime.now()}] {name} is online as {client.user}")
+
+    @client.event
+    async def on_message(message):
+        if message.author == client.user:
+            return
+        if message.content.lower().startswith(f"hello {name.lower()}"):
+            await message.channel.send(f"Hello from {name} 💜")
+
+    return client, token
+
+# Background startup
+async def start_bots():
+    for name, info in SISTERS.items():
+        token = info["token"]
+        if token:
+            client, tkn = create_bot(name, token)
+            clients[name] = client
+            print(f"[{datetime.datetime.now()}] Logging in {name}…")
+            asyncio.create_task(client.start(tkn))
+        else:
+            print(f"[{datetime.datetime.now()}] No token found for {name}, skipping.")
+
+@app.on_event("startup")
+async def on_startup():
+    asyncio.create_task(start_bots())
 
 if __name__ == "__main__":
-    log("=== Starting main.py ===")
-    init_db()
-    try:
-        asyncio.run(run_sisters())
-    except Exception as e:
-        log(f"Fatal error: {e}")
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
