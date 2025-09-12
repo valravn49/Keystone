@@ -1,102 +1,123 @@
 import os
-import discord
+import random
 import asyncio
-import datetime
+import time
+import discord
+from discord.ext import commands
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+import openai
 
-# Discord intents
-intents = discord.Intents.default()
-intents.messages = True
-intents.guilds = True
-
-# Sister tokens from env
-SISTERS = {
-    "Aria": {
-        "token": os.getenv("ARIA_TOKEN"),
-        "dob": "1999-03-20",
-    },
-    "Selene": {
-        "token": os.getenv("SELENE_TOKEN"),
-        "dob": "2001-07-13",
-    },
-    "Cassandra": {
-        "token": os.getenv("CASSANDRA_TOKEN"),
-        "dob": "2003-01-01",
-    },
-    "Ivy": {
-        "token": os.getenv("IVY_TOKEN"),
-        "dob": "2006-10-31",
-    },
-}
-
-# Role cycle order
-ROLE_ORDER = ["Lead", "Rest", "Support"]
-
-# Store client objects
-clients = {}
-
-# Create FastAPI app
+# --------------------------
+# FastAPI server (healthcheck for Railway)
+# --------------------------
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
-@app.get("/debug/status")
-async def debug_status():
-    today = datetime.date.today()
-    # Pick which sister is Lead based on day of year
-    names = list(SISTERS.keys())
-    lead_index = today.toordinal() % len(names)  # cycles through sisters
-    roles = {}
+# --------------------------
+# OpenAI setup
+# --------------------------
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-    for i, name in enumerate(names):
-        # Distance from the lead sister
-        dist = (i - lead_index) % len(names)
-        role = ROLE_ORDER[dist % len(ROLE_ORDER)]
-        client = clients.get(name)
-        roles[name] = {
-            "dob": SISTERS[name]["dob"],
-            "role": role,
-            "connection": "online" if client and client.is_ready() else "offline"
-        }
+async def ask_llm(sister_name: str, message: str) -> str:
+    """Send user message + sister persona to OpenAI and return a reply."""
+    personality = PERSONALITIES[sister_name]
+    try:
+        response = await openai.ChatCompletion.acreate(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": personality},
+                {"role": "user", "content": message},
+            ],
+            max_tokens=120,
+            temperature=0.8,
+        )
+        return response.choices[0].message["content"].strip()
+    except Exception as e:
+        return f"(error generating reply: {e})"
 
-    return roles
+# --------------------------
+# Sister personalities & cooldowns
+# --------------------------
+PERSONALITIES = {
+    "Aria": "Aria is calm, orderly, and nurturing. She tracks logs and brings structure, speaking softly but firmly.",
+    "Selene": "Selene is warm, maternal, and comforting. She uses gentle encouragement and affectionate words.",
+    "Cassandra": "Cassandra is strict, commanding, and values discipline. She speaks firmly, with an air of authority.",
+    "Ivy": "Ivy is playful, bratty, and teasing. She flirts, provokes, and uses cheeky humor to keep things fun.",
+}
 
-# Function to create a bot for each sister
-def create_bot(name, token):
-    client = discord.Client(intents=intents)
+SISTER_RULES = {
+    "Aria": {"prob": 0.6, "cooldown": 45},      # replies sometimes, moderate cooldown
+    "Selene": {"prob": 0.7, "cooldown": 40},    # replies often, comforting
+    "Cassandra": {"prob": 0.4, "cooldown": 90}, # rare, strict voice
+    "Ivy": {"prob": 0.8, "cooldown": 20},       # bratty, replies a lot
+}
 
-    @client.event
-    async def on_ready():
-        print(f"[{datetime.datetime.now()}] {name} is online as {client.user}")
+# Track last reply times
+last_reply_time = {s: 0 for s in SISTER_RULES.keys()}
 
-@client.event
+# --------------------------
+# Discord setup
+# --------------------------
+intents = discord.Intents.default()
+intents.messages = True
+intents.message_content = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+@bot.event
+async def on_ready():
+    print(f"{bot.user} is now online!")
+
+@bot.event
 async def on_message(message):
-    if message.author == client.user:
+    if message.author.bot:
         return
 
-    if client.user.mentioned_in(message):  # only respond if mentioned
-        reply = await ask_llm(name, message.content)
-        await message.channel.send(reply)
-    return client, token
+    now = time.time()
+    sisters_to_reply = []
 
-# Background startup
-async def start_bots():
-    for name, info in SISTERS.items():
-        token = info["token"]
-        if token:
-            client, tkn = create_bot(name, token)
-            clients[name] = client
-            print(f"[{datetime.datetime.now()}] Logging in {name}…")
-            asyncio.create_task(client.start(tkn))
-        else:
-            print(f"[{datetime.datetime.now()}] No token found for {name}, skipping.")
+    for sister, rules in SISTER_RULES.items():
+        # respect cooldown
+        if now - last_reply_time[sister] < rules["cooldown"]:
+            continue
+        # decide if she replies
+        if random.random() < rules["prob"]:
+            sisters_to_reply.append(sister)
 
-@app.on_event("startup")
-async def on_startup():
-    asyncio.create_task(start_bots())
+    delay = 0
+    for sister in sisters_to_reply:
+        asyncio.create_task(delayed_reply(sister, message, delay))
+        delay += random.randint(2, 4)  # stagger replies naturally
+
+async def delayed_reply(sister_name, message, delay):
+    global last_reply_time
+    await asyncio.sleep(delay)
+    reply = await ask_llm(sister_name, message.content)
+    await message.channel.send(f"**{sister_name}:** {reply}")
+    last_reply_time[sister_name] = time.time()
+
+# --------------------------
+# Run both Discord and FastAPI
+# --------------------------
+async def main():
+    discord_task = asyncio.create_task(bot.start(os.getenv("DISCORD_TOKEN")))
+    api_task = asyncio.create_task(
+        uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")
+    )
+    await asyncio.gather(discord_task, api_task)
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+    asyncio.run(main())
