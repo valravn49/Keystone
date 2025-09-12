@@ -72,13 +72,14 @@ def create_bot(name, token):
     async def on_ready():
         print(f"[{datetime.datetime.now()}] {name} is online as {client.user}")
 
-    @client.event
-    async def on_message(message):
-        if message.author == client.user:
-            return
-        if message.content.lower().startswith(f"hello {name.lower()}"):
-            await message.channel.send(f"Hello from {name} 💜")
+@client.event
+async def on_message(message):
+    if message.author == client.user:
+        return
 
+    if client.user.mentioned_in(message):  # only respond if mentioned
+        reply = await ask_llm(name, message.content)
+        await message.channel.send(reply)
     return client, token
 
 # Background startup
