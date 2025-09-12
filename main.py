@@ -13,7 +13,6 @@ intents.guilds = True
 
 # === Database setup ===
 def init_db():
-    """Ensure the DB and sisters table exist."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
@@ -31,7 +30,6 @@ def init_db():
     seed_if_empty()
 
 def seed_if_empty():
-    """Seed default sisters if missing."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     sisters_data = [
@@ -42,8 +40,7 @@ def seed_if_empty():
     ]
     for name, birthday, personality, token, caps in sisters_data:
         c.execute("SELECT 1 FROM sisters WHERE name=?", (name,))
-        exists = c.fetchone()
-        if not exists:
+        if not c.fetchone():
             c.execute(
                 "INSERT INTO sisters (name, birthday, personality, token, caps) VALUES (?, ?, ?, ?, ?)",
                 (name, birthday, personality, token, caps),
@@ -51,7 +48,7 @@ def seed_if_empty():
     conn.commit()
     conn.close()
 
-# === FastAPI setup ===
+# === FastAPI ===
 app = FastAPI()
 
 @app.on_event("startup")
@@ -62,27 +59,7 @@ async def startup_event():
 async def health():
     return {"status": "ok"}
 
-@app.get("/sisters")
-async def get_all_sisters():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT name, birthday, personality, caps FROM sisters")
-    sisters = [{"name": n, "birthday": b, "personality": p, "caps": c_} for n, b, p, c_ in c.fetchall()]
-    conn.close()
-    return sisters
-
-@app.get("/sisters/{name}")
-async def get_sister(name: str):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT name, birthday, personality, caps FROM sisters WHERE name=?", (name,))
-    row = c.fetchone()
-    conn.close()
-    if row:
-        return {"name": row[0], "birthday": row[1], "personality": row[2], "caps": row[3]}
-    return {"error": "Not found"}
-
-# === Discord bots ===
+# === Discord bot class ===
 class SisterBot(commands.Bot):
     def __init__(self, name, personality, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -107,15 +84,23 @@ async def run_bots():
     sisters = c.fetchall()
     conn.close()
 
-    bots = []
+    tasks = []
     for name, personality, token in sisters:
-        bot = SisterBot(name, personality, command_prefix="!", intents=intents)
-        bots.append((bot, token))
+        if token:  # make sure token isn’t None
+            bot = SisterBot(name, personality, command_prefix="!", intents=intents)
+            tasks.append(bot.start(token))
 
-    await asyncio.gather(*(bot.start(token) for bot, token in bots))
+    if tasks:
+        await asyncio.gather(*tasks)
 
 # === Entrypoint ===
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
-    loop.create_task(run_bots())
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+
+    # Run uvicorn in a background task
+    config = uvicorn.Config(app, host="0.0.0.0", port=8080, log_level="info")
+    server = uvicorn.Server(config)
+    loop.create_task(server.serve())
+
+    # Run Discord bots in the same loop
+    loop.run_until_complete(run_bots())
