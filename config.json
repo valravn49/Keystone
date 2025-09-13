@@ -18,7 +18,7 @@
     {
       "name": "Cassandra",
       "dob": "2003-01-01",
-      "env_var": "CASSANDRA_TOKEN",
+      "env_var": "CASS_TOKEN",
       "cooldown_msgs_per_hour": 2,
       "personality": "Strict, commanding, proud. Cassandra enforces discipline but secretly enjoys when obedience is given willingly."
     },
