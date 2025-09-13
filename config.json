@@ -1,0 +1,70 @@
+{
+  "sisters": [
+    {
+      "name": "Aria",
+      "dob": "1999-03-20",
+      "personality": "Calm, orderly, nurturing with discipline.",
+      "cooldown_messages_per_hour": 3
+    },
+    {
+      "name": "Selene",
+      "dob": "2001-07-13",
+      "personality": "Gentle, soft, caring, emotional support.",
+      "cooldown_messages_per_hour": 4
+    },
+    {
+      "name": "Cassandra",
+      "dob": "2003-01-01",
+      "personality": "Strict, commanding, focused on discipline.",
+      "cooldown_messages_per_hour": 2
+    },
+    {
+      "name": "Ivy",
+      "dob": "2006-10-31",
+      "personality": "Playful, bratty, teasing but affectionate.",
+      "cooldown_messages_per_hour": 4
+    }
+  ],
+  "rotation": {
+    "current_lead": "Ivy",
+    "current_theme": "soft",
+    "themes_cycle": [
+      "bratty",
+      "soft",
+      "crossdressing",
+      "skincare"
+    ],
+    "last_rotation_date": "2025-09-11"
+  },
+  "tasks": {
+    "baseline": [
+      "Chastity log",
+      "Skincare (morning & night)",
+      "Evening journal"
+    ],
+    "rotating": [
+      "Plug training",
+      "Depth & sustainment",
+      "Anal masturbation / denial",
+      "Oral obedience",
+      "Correction tasks"
+    ],
+    "hygiene_checklist": [
+      "Sit when possible to reduce spray",
+      "Dab dry around cage openings",
+      "Rinse with warm water if convenient",
+      "Pat dry thoroughly",
+      "Apply light moisturizer if irritated",
+      "Check alignment to avoid pinching"
+    ],
+    "outfit_rules": [
+      "Only formal outfits and training gear are logged",
+      "Underwear and loungewear remain private"
+    ]
+  },
+  "partner_service": {
+    "active": true,
+    "dice_roll_chance": 3,
+    "after_work_modifier": true
+  }
+}
