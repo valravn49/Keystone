@@ -35,6 +35,8 @@ for s in config["rotation"]:
         continue
 
     intents = discord.Intents.default()
+    intents.messages = True
+    intents.guilds = True
     bot = commands.Bot(command_prefix="!", intents=intents)
     bot.sister_info = s
     bot.token = token
@@ -43,6 +45,53 @@ for s in config["rotation"]:
     @bot.event
     async def on_ready(b=bot):
         print(f"[LOGIN] {b.sister_info['name']} logged in as {b.user}")
+
+    @bot.event
+    async def on_message(message, b=bot):
+        if message.author == b.user:
+            return
+        if message.channel.id != FAMILY_CHANNEL_ID:
+            return
+
+        name = b.sister_info["name"]
+        rotation = get_today_rotation()
+
+        # Personality-driven replies
+        personalities = {
+            "Aria": {
+                "default": "Aria: I hear you, love. Stay steady.",
+                "resting": "Aria (resting): I’m watching quietly with calm."
+            },
+            "Selene": {
+                "default": "Selene: Mmm… I feel your words, softly.",
+                "resting": "Selene (resting): I drift in and out, softly present."
+            },
+            "Cassandra": {
+                "default": "Cassandra: Discipline, remember. Don’t falter.",
+                "resting": "Cassandra (resting): Even when quiet, I expect your best."
+            },
+            "Ivy": {
+                "default": "Ivy: Hehe~ I’m watching you closely, cutie.",
+                "resting": "Ivy (resting): I’m sneaking peeks even while resting~"
+            }
+        }
+
+        reply_default = personalities.get(name, {}).get("default", f"{name}: Present.")
+        reply_resting = personalities.get(name, {}).get("resting", f"{name}: Resting quietly.")
+
+        # Lead always replies
+        if name == rotation["lead"]:
+            await message.channel.send(reply_default)
+
+        # Supports reply ~50% of the time
+        elif name in rotation["supports"]:
+            if random.random() < 0.5:
+                await message.channel.send(reply_default)
+
+        # Rest replies rarely (~15%)
+        elif name == rotation["rest"]:
+            if random.random() < 0.15:
+                await message.channel.send(reply_resting)
 
 # ==============================
 # Rotation + Theme Helpers
@@ -77,20 +126,6 @@ async def post_to_family(message: str, sender=None):
                 break
 
 # ==============================
-# Personality Helpers
-# ==============================
-def personality_line(name, context="morning"):
-    if name == "Aria":
-        return "Aria: Stay steady and kind today." if context == "morning" else "Aria: Sleep well, with calm in your heart."
-    if name == "Selene":
-        return "Selene: Let’s dream awake today, softly." if context == "morning" else "Selene: Drift like starlight into rest."
-    if name == "Cassandra":
-        return "Cassandra: Don’t falter—discipline is everything." if context == "morning" else "Cassandra: Reflect. Tomorrow I expect more."
-    if name == "Ivy":
-        return "Ivy: Don’t slack, cutie, I’ll tease you if you do~" if context == "morning" else "Ivy: Night night, I’ll play in your dreams."
-    return f"{name}: Present."
-
-# ==============================
 # Scheduled Messages
 # ==============================
 async def send_morning_message():
@@ -98,17 +133,13 @@ async def send_morning_message():
     theme = get_current_theme()
     lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
 
-    # Lead message
-    if lead == "Aria":
-        opening = "🌅 Good morning, love. Let’s begin the day calmly and with order."
-    elif lead == "Selene":
-        opening = "🌅 Mmm… good morning, dreamer. Let’s flow softly into today together."
-    elif lead == "Cassandra":
-        opening = "🌅 Good morning. Stand tall, be proud, and show me your discipline today."
-    elif lead == "Ivy":
-        opening = "🌅 Hey cutie, morning! I bet you’re still warm in bed, but I’m watching~"
-    else:
-        opening = f"🌅 Good morning from **{lead}**!"
+    openings = {
+        "Aria": "🌅 Good morning, love. Let’s begin the day calmly and with order.",
+        "Selene": "🌅 Mmm… good morning, dreamer. Let’s flow softly into today together.",
+        "Cassandra": "🌅 Good morning. Stand tall, be proud, and show me your discipline today.",
+        "Ivy": "🌅 Hey cutie, morning! I bet you’re still warm in bed, but I’m watching~"
+    }
+    opening = openings.get(lead, f"🌅 Good morning from **{lead}**!")
 
     msg = (
         f"{opening}\n\n"
@@ -124,9 +155,11 @@ async def send_morning_message():
     )
     await post_to_family(msg, sender=lead)
 
-    # Support sisters add short replies
     for s in supports:
-        await post_to_family(personality_line(s, "morning"), sender=s)
+        await post_to_family(f"{s}: Supporting you today!", sender=s)
+
+    if random.random() < 0.15:
+        await post_to_family(f"{rest}: Taking it easy today, but still here.", sender=rest)
 
     state["rotation_index"] += 1
     print(f"[SCHEDULER] Morning message sent by {lead}")
@@ -136,16 +169,13 @@ async def send_night_message():
     theme = get_current_theme()
     lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
 
-    if lead == "Aria":
-        opening = "🌙 Good night, love. Rest peacefully, tomorrow is another steady step."
-    elif lead == "Selene":
-        opening = "🌙 Shhh… the night embraces you. Drift into dreams softly."
-    elif lead == "Cassandra":
-        opening = "🌙 Good night. You’ve had your orders—reflect and be honest with yourself."
-    elif lead == "Ivy":
-        opening = "🌙 Night night, sweet thing. Don’t think I won’t check in your dreams~"
-    else:
-        opening = f"🌙 Good night from **{lead}**."
+    openings = {
+        "Aria": "🌙 Good night, love. Rest peacefully, tomorrow is another steady step.",
+        "Selene": "🌙 Shhh… the night embraces you. Drift into dreams softly.",
+        "Cassandra": "🌙 Good night. You’ve had your orders—reflect and be honest with yourself.",
+        "Ivy": "🌙 Night night, sweet thing. Don’t think I won’t check in your dreams~"
+    }
+    opening = openings.get(lead, f"🌙 Good night from **{lead}**.")
 
     msg = (
         f"{opening}\n\n"
@@ -158,7 +188,10 @@ async def send_night_message():
     await post_to_family(msg, sender=lead)
 
     for s in supports:
-        await post_to_family(personality_line(s, "night"), sender=s)
+        await post_to_family(f"{s}: Rest well, I’ve got your back.", sender=s)
+
+    if random.random() < 0.15:
+        await post_to_family(f"{rest}: Quietly wishing you good night in my own way.", sender=rest)
 
     print(f"[SCHEDULER] Night message sent by {lead}")
 
