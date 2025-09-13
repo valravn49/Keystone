@@ -6,6 +6,7 @@ import asyncio
 from discord.ext import commands
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime, timedelta
+from fastapi import FastAPI   # NEW
 
 # ==============================
 # Load config.json
@@ -56,7 +57,7 @@ def get_today_rotation():
 def get_current_theme():
     # Rotate every Monday
     today = datetime.now().date()
-    if state["last_theme_update"] is None or today.weekday() == 0 and state["last_theme_update"] != today:
+    if state["last_theme_update"] is None or (today.weekday() == 0 and state["last_theme_update"] != today):
         state["theme_index"] = (state["theme_index"] + 1) % len(THEMES)
         state["last_theme_update"] = today
     return THEMES[state["theme_index"]]
@@ -129,5 +130,25 @@ async def start_all():
 
     await asyncio.gather(*[s.start(s.token) for s in sisters])
 
+# ==============================
+# FastAPI App (for Railway)
+# ==============================
+app = FastAPI()
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+@app.get("/status")
+async def status():
+    rotation = get_today_rotation()
+    theme = get_current_theme()
+    return {
+        "bots": [s.sister_info["name"] for s in sisters],
+        "rotation": rotation,
+        "theme": theme,
+    }
+
+# If you run it directly (not with uvicorn)
 if __name__ == "__main__":
     asyncio.run(start_all())
