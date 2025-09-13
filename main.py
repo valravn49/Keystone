@@ -66,10 +66,10 @@ for s in config["rotation"]:
             should_reply = True
         elif name in rotation["supports"]:
             role = "support"
-            should_reply = random.random() < 0.5
+            should_reply = random.random() < 0.6   # 60% chance
         elif name == rotation["rest"]:
             role = "rest"
-            should_reply = random.random() < 0.15
+            should_reply = random.random() < 0.2   # 20% chance
 
         if should_reply and role:
             try:
@@ -125,32 +125,32 @@ async def send_morning_message():
     theme = get_current_theme()
     lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
 
-    # Lead sister: structured morning ritual
+    # Lead sister: detailed structured message
     lead_msg = await generate_llm_reply(
         sister=lead,
-        user_message="Give your good morning message, including rotation roles, theme, hygiene reminders, and discipline check.",
+        user_message="Give your good morning message, include roles, theme, hygiene reminders, and discipline check.",
         theme=theme,
         role="lead"
     )
     await post_to_family(lead_msg, sender=lead)
 
-    # Support sisters: add 1–3 sentence themed replies
+    # Support sisters: short replies
     for s in supports:
-        if random.random() < 0.7:  # ~70% chance to chime in
+        if random.random() < 0.7:  # ~70% chance
             reply = await generate_llm_reply(
                 sister=s,
-                user_message="Add a short supportive morning comment.",
+                user_message="Add a supportive morning comment.",
                 theme=theme,
                 role="support"
             )
             if reply:
                 await post_to_family(reply, sender=s)
 
-    # Rest sister: rare, subtle comment
+    # Rest sister: subtle presence
     if random.random() < 0.2:  # ~20% chance
         rest_reply = await generate_llm_reply(
             sister=rest,
-            user_message="Give a very short, quiet morning remark to show presence while resting.",
+            user_message="Give a very short quiet morning remark while resting.",
             theme=theme,
             role="rest"
         )
@@ -160,22 +160,21 @@ async def send_morning_message():
     state["rotation_index"] += 1
     print(f"[SCHEDULER] Morning message completed with {lead} as lead")
 
-
 async def send_night_message():
     rotation = get_today_rotation()
     theme = get_current_theme()
     lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
 
-    # Lead sister: structured night ritual
+    # Lead sister: detailed structured message
     lead_msg = await generate_llm_reply(
         sister=lead,
-        user_message="Give your good night message, thanking supporters, wishing rest to the resting sister, asking for one reflection, reminding about outfits, wake-up discipline, and overnight plug/service tasks.",
+        user_message="Give your good night message: thank supporters, wish rest, ask reflection, remind about outfits, wake-up discipline, and plug/service tasks.",
         theme=theme,
         role="lead"
     )
     await post_to_family(lead_msg, sender=lead)
 
-    # Support sisters: soft good-night comments
+    # Support sisters: short replies
     for s in supports:
         if random.random() < 0.6:  # ~60% chance
             reply = await generate_llm_reply(
@@ -187,11 +186,11 @@ async def send_night_message():
             if reply:
                 await post_to_family(reply, sender=s)
 
-    # Rest sister: rare subtle remark
-    if random.random() < 0.15:
+    # Rest sister: subtle presence
+    if random.random() < 0.15:  # ~15% chance
         rest_reply = await generate_llm_reply(
             sister=rest,
-            user_message="Give a very brief, quiet night remark while resting.",
+            user_message="Give a very brief quiet night remark while resting.",
             theme=theme,
             role="rest"
         )
@@ -199,6 +198,7 @@ async def send_night_message():
             await post_to_family(rest_reply, sender=rest)
 
     print(f"[SCHEDULER] Night message completed with {lead} as lead")
+
 # ==============================
 # FastAPI App (for Railway)
 # ==============================
