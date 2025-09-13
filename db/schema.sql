@@ -1,8 +1,49 @@
-CREATE TABLE IF NOT EXISTS rotations (date TEXT PRIMARY KEY, lead TEXT, rest TEXT, supports_json TEXT);
-CREATE TABLE IF NOT EXISTS themes (week_start TEXT PRIMARY KEY, theme TEXT);
-CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, kind TEXT, payload TEXT);
-CREATE TABLE IF NOT EXISTS sisters (name TEXT PRIMARY KEY, token TEXT, channel_id TEXT);
-CREATE TABLE IF NOT EXISTS persona (name TEXT PRIMARY KEY, traits_json TEXT, bounds_json TEXT, last_update TEXT);
-CREATE TABLE IF NOT EXISTS memories (id INTEGER PRIMARY KEY AUTOINCREMENT, sister TEXT, ts TEXT, kind TEXT, content TEXT);
-CREATE TABLE IF NOT EXISTS feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, sister TEXT, signal TEXT, weight REAL DEFAULT 1.0);
+-- schema.sql
+
+-- Table of sisters (personality + DOB pulled from config.json)
+CREATE TABLE IF NOT EXISTS sisters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,
+    dob DATE NOT NULL,
+    personality TEXT,
+    cooldown_msgs_per_hour INTEGER DEFAULT 3,
+    llm_style TEXT
+);
+
+-- Table to log daily rotation
+CREATE TABLE IF NOT EXISTS rotation_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    lead_sister TEXT NOT NULL,
+    rest_sister TEXT NOT NULL,
+    support_sisters TEXT NOT NULL,
+    theme TEXT NOT NULL,
+    wake_time TEXT,
+    plug_status TEXT,
+    partner_service_status TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table to store themes (rotates weekly)
+CREATE TABLE IF NOT EXISTS themes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL
+);
+
+-- Table to track hygiene confirmations
+CREATE TABLE IF NOT EXISTS hygiene_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    confirmed BOOLEAN DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table to track partner service tasks
+CREATE TABLE IF NOT EXISTS partner_service (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    week TEXT NOT NULL,
+    arranged BOOLEAN DEFAULT 0,
+    completed BOOLEAN DEFAULT 0,
+    same_day_modifier BOOLEAN DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
