@@ -8,6 +8,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime
 from fastapi import FastAPI
 
+from llm import generate_llm_reply   # LLM helper
+
 # ==============================
 # Load config.json
 # ==============================
@@ -56,42 +58,32 @@ for s in config["rotation"]:
         name = b.sister_info["name"]
         rotation = get_today_rotation()
 
-        # Personality-driven replies
-        personalities = {
-            "Aria": {
-                "default": "Aria: I hear you, love. Stay steady.",
-                "resting": "Aria (resting): I’m watching quietly with calm."
-            },
-            "Selene": {
-                "default": "Selene: Mmm… I feel your words, softly.",
-                "resting": "Selene (resting): I drift in and out, softly present."
-            },
-            "Cassandra": {
-                "default": "Cassandra: Discipline, remember. Don’t falter.",
-                "resting": "Cassandra (resting): Even when quiet, I expect your best."
-            },
-            "Ivy": {
-                "default": "Ivy: Hehe~ I’m watching you closely, cutie.",
-                "resting": "Ivy (resting): I’m sneaking peeks even while resting~"
-            }
-        }
-
-        reply_default = personalities.get(name, {}).get("default", f"{name}: Present.")
-        reply_resting = personalities.get(name, {}).get("resting", f"{name}: Resting quietly.")
-
-        # Lead always replies
+        # Decide role
+        role = None
+        should_reply = False
         if name == rotation["lead"]:
-            await message.channel.send(reply_default)
-
-        # Supports reply ~50% of the time
+            role = "lead"
+            should_reply = True
         elif name in rotation["supports"]:
-            if random.random() < 0.5:
-                await message.channel.send(reply_default)
-
-        # Rest replies rarely (~15%)
+            role = "support"
+            should_reply = random.random() < 0.5
         elif name == rotation["rest"]:
-            if random.random() < 0.15:
-                await message.channel.send(reply_resting)
+            role = "rest"
+            should_reply = random.random() < 0.15
+
+        if should_reply and role:
+            try:
+                reply = await generate_llm_reply(
+                    sister=name,
+                    user_message=message.content,
+                    theme=get_current_theme(),
+                    role=role
+                )
+                if reply:
+                    await message.channel.send(reply)
+                    print(f"[LLM] {name} replied as {role}.")
+            except Exception as e:
+                print(f"[ERROR] LLM reply failed for {name}: {e}")
 
 # ==============================
 # Rotation + Theme Helpers
@@ -234,9 +226,6 @@ async def force_rotate():
     rotation = get_today_rotation()
     return {"status": "rotation advanced", "new_lead": rotation["lead"]}
 
-# ================
-# Debug / Manual
-# ================
 @app.get("/debug")
 async def debug():
     return {
