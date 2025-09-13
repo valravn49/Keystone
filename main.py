@@ -1,184 +1,114 @@
 import os
-import json
-import random
-import asyncio
-import sqlite3
-from datetime import datetime, timedelta
 import discord
-from discord.ext import commands, tasks
-from fastapi import FastAPI
-import uvicorn
+import asyncio
+import json
+import sqlite3
+from discord.ext import tasks, commands
+from datetime import datetime, timedelta
+from llm import generate_llm_reply
 
-# -----------------------------
-# Load Config
-# -----------------------------
+# Load config
 with open("config.json", "r") as f:
-    CONFIG = json.load(f)
+    config = json.load(f)
 
-SISTERS = CONFIG["sisters"]
-THEMES = CONFIG["themes"]
+# Global state
+ROTATION = config["rotation"]
+THEMES = config["themes"]
+PROJECT_INDEX = "data/Project_Index.txt"
 
-# -----------------------------
-# DB Helpers
-# -----------------------------
-DB_PATH = "db/db.sqlite3"
-
-def get_conn():
-    return sqlite3.connect(DB_PATH)
-
-def log_to_db(date, lead, rest, support, theme):
-    conn = get_conn()
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO rotation_log (date, lead, rest, support, theme) VALUES (?, ?, ?, ?, ?)",
-        (date, lead, rest, json.dumps(support), theme),
-    )
-    conn.commit()
-    conn.close()
-
-# -----------------------------
-# Bot Setup
-# -----------------------------
-intents = discord.Intents.default()
-intents.messages = True
-intents.guilds = True
-
-bots = {}
-
-def make_bot(name):
-    prefix = "!"
-    return commands.Bot(command_prefix=prefix, intents=intents)
-
-for sister in SISTERS:
-    bots[sister["name"]] = make_bot(sister["name"])
-
-# -----------------------------
-# Rotation State
-# -----------------------------
+# Track theme and rotation
 state = {
-    "lead": "Ivy",  # Default starting point
-    "rest": "Aria",
-    "support": ["Selene", "Cassandra"],
-    "theme": "soft",
-    "last_rotation": datetime.now().date()
+    "lead_index": 0,
+    "theme_index": 0,
+    "last_theme_update": None
 }
 
-# -----------------------------
-# Rotation Logic
-# -----------------------------
+# Setup intents
+intents = discord.Intents.default()
+intents.message_content = True
+
+# Build bots dict
+bots = {}
+for sister in ROTATION:
+    bots[sister["name"]] = commands.Bot(command_prefix="!", intents=intents)
+
+# Utility functions
+def get_roles():
+    lead = ROTATION[state["lead_index"]]["name"]
+    rest = ROTATION[(state["lead_index"] - 1) % len(ROTATION)]["name"]
+    support = [s["name"] for i, s in enumerate(ROTATION) if s["name"] not in [lead, rest]]
+    return lead, rest, support
+
 def rotate_roles():
-    order = [s["name"] for s in SISTERS]
-    idx = order.index(state["lead"])
-    new_lead = order[(idx + 1) % len(order)]
-    new_rest = state["lead"]
-    new_support = [s for s in order if s not in [new_lead, new_rest]]
-    state["lead"], state["rest"], state["support"] = new_lead, new_rest, new_support
+    state["lead_index"] = (state["lead_index"] + 1) % len(ROTATION)
+    if datetime.now().weekday() == 0:  # Monday
+        state["theme_index"] = (state["theme_index"] + 1) % len(THEMES)
+        state["last_theme_update"] = datetime.now().strftime("%Y-%m-%d")
 
-def rotate_theme():
-    idx = THEMES.index(state["theme"])
-    state["theme"] = THEMES[(idx + 1) % len(THEMES)]
+def log_rotation():
+    lead, rest, support = get_roles()
+    theme = THEMES[state["theme_index"]]
+    entry = f"{datetime.now().strftime('%Y-%m-%d')} | 🌟 {lead} | 🌙 {rest} | ✨ {', '.join(support)} | Theme: {theme}\n"
+    with open(PROJECT_INDEX, "a") as f:
+        f.write(entry)
+    print("[LOG] Rotation updated:", entry.strip())
 
-# -----------------------------
-# Messages
-# -----------------------------
-def morning_message():
-    lead = state["lead"]
-    rest = state["rest"]
-    support = ", ".join(state["support"])
-    theme = state["theme"]
+async def send_message(channel_id, message):
+    for bot in bots.values():
+        channel = bot.get_channel(channel_id)
+        if channel:
+            try:
+                await channel.send(message)
+            except Exception as e:
+                print(f"[ERROR] Failed to send message: {e}")
 
-    return f"""
-🌅 Good morning from **{lead}**!
-- 🌟 Lead: {lead}
-- 🌙 Rest: {rest}
-- ✨ Support: {support}
+# Scheduled tasks
+@tasks.loop(minutes=1)
+async def scheduler():
+    now = datetime.now().strftime("%H:%M")
+    lead, rest, support = get_roles()
+    theme = THEMES[state["theme_index"]]
 
-📋 Training Tasks:
-- Chastity log
-- Skincare (morning & night)
-- Evening journal
-+ Rotating focus (e.g. plug training, denial, oral obedience…)
+    if now == "06:00":
+        msg = f"🌞 Good morning! {lead} here.\nToday's roles → Lead: {lead}, Rest: {rest}, Support: {', '.join(support)}.\nTheme: {theme}."
+        await send_message(config["family_group_channel"], msg)
+        log_rotation()
 
-🧼 Cage Hygiene Checklist:
-Sit, dab dry, rinse if needed, moisturize, check alignment.
-Confirm with 'done' in chastity record.
+    if now == "22:00":
+        msg = f"🌙 Good night from {lead}. Rest well, all of you.\nTheme reminder: {theme}."
+        await send_message(config["family_group_channel"], msg)
 
-🎭 This week’s theme: **{theme}**
+# Event bindings
+for sister in ROTATION:
+    bot = bots[sister["name"]]
 
-⏰ Don’t forget to log your wake-up time for discipline.
-"""
-
-def night_message():
-    lead = state["lead"]
-    return f"🌙 Good night from **{lead}**! Remember to stay disciplined and log your journal."
-
-# -----------------------------
-# Scheduler
-# -----------------------------
-async def daily_tasks():
-    await bots[state["lead"]].wait_until_ready()
-    channel_id = int(os.getenv("DISCORD_CHANNEL_ID"))
-    channel = bots[state["lead"]].get_channel(channel_id)
-
-    while True:
-        now = datetime.now()
-
-        # Morning
-        if now.hour == 6 and now.minute == 0:
-            msg = morning_message()
-            await channel.send(msg)
-            log_to_db(str(now.date()), state["lead"], state["rest"], state["support"], state["theme"])
-            print(f"[DEBUG] Morning message posted by {state['lead']}.")
-
-        # Night
-        if now.hour == 22 and now.minute == 0:
-            msg = night_message()
-            await channel.send(msg)
-            print(f"[DEBUG] Night message posted by {state['lead']}.")
-
-        # Monday theme rotation
-        if now.weekday() == 0 and state["last_rotation"] != now.date():
-            rotate_theme()
-            state["last_rotation"] = now.date()
-            print(f"[DEBUG] Theme rotated to {state['theme']}.")
-
-        # Daily lead rotation at midnight
-        if now.hour == 0 and now.minute == 0:
-            rotate_roles()
-            print(f"[DEBUG] Roles rotated: Lead {state['lead']}.")
-
-        await asyncio.sleep(60)
-
-# -----------------------------
-# Bot Events
-# -----------------------------
-for name, bot in bots.items():
     @bot.event
-    async def on_ready(bot=bot, name=name):
-        print(f"[DEBUG] {name} logged in as {bot.user}")
+    async def on_ready(bot=bot, sister=sister):
+        print(f"[LOGIN] {sister['name']} has logged in.")
 
-# -----------------------------
-# FastAPI for healthchecks
-# -----------------------------
-app = FastAPI()
+    @bot.event
+    async def on_message(message, bot=bot, sister=sister):
+        if message.author == bot.user:
+            return
 
-@app.get("/health")
-def health():
-    return {"status": "ok", "lead": state["lead"], "theme": state["theme"]}
+        lead, rest, support = get_roles()
+        role = "support"
+        if sister["name"] == lead:
+            role = "lead"
+        elif sister["name"] == rest:
+            role = "rest"
 
-# -----------------------------
-# Entrypoint
-# -----------------------------
-async def start_all():
-    tokens = {s["name"]: os.getenv(f"{s['name'].upper()}_TOKEN") for s in SISTERS}
-    loop = asyncio.get_event_loop()
+        # Generate reply via LLM
+        reply = generate_llm_reply(sister["name"], role, message.content)
+        if reply:
+            await message.channel.send(reply)
 
-    for name, bot in bots.items():
-        loop.create_task(bot.start(tokens[name]))
-
-    loop.create_task(daily_tasks())
+# Run all bots concurrently
+async def start_bots():
+    await asyncio.gather(*[
+        bot.start(os.getenv(s["env_var"])) for s in ROTATION
+    ])
 
 if __name__ == "__main__":
-    import threading
-    threading.Thread(target=lambda: uvicorn.run(app, host="0.0.0.0", port=8080), daemon=True).start()
-    asyncio.run(start_all())
+    scheduler.start()
+    asyncio.run(start_bots())
