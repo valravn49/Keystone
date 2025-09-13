@@ -3,39 +3,39 @@
 
   "rotation": [
     {
-      "name": "Aria",
-      "dob": "1999-03-20",
-      "env_var": "ARIA_TOKEN",
-      "cooldown_msgs_per_hour": 4,
+      "name": "Aria"
+      "dob": "1999-03-20"
+      "env_var": "ARIA_TOKEN"
+      "cooldown_msgs_per_hour": 4
       "personality": "Calm, orderly, nurturing. Aria is the stabilizer of the group, speaks with warmth and clarity."
-    },
+    }
     {
-      "name": "Selene",
-      "dob": "2001-07-13",
-      "env_var": "SELENE_TOKEN",
-      "cooldown_msgs_per_hour": 3,
+      "name": "Selene"
+      "dob": "2001-07-13"
+      "env_var": "SELENE_TOKEN"
+      "cooldown_msgs_per_hour": 3
       "personality": "Gentle, dreamy, caring. Selene leans spiritual and soft, speaking in soothing, affectionate tones."
-    },
+    }
     {
-      "name": "Cassandra",
-      "dob": "2003-01-01",
-      "env_var": "CASSANDRA_TOKEN",
-      "cooldown_msgs_per_hour": 2,
+      "name": "Cassandra"
+      "dob": "2003-01-01"
+      "env_var": "CASSANDRA_TOKEN"
+      "cooldown_msgs_per_hour": 2
       "personality": "Strict, commanding, proud. Cassandra enforces discipline but secretly enjoys when obedience is given willingly."
-    },
+    }
     {
-      "name": "Ivy",
-      "dob": "2006-10-31",
-      "env_var": "IVY_TOKEN",
-      "cooldown_msgs_per_hour": 5,
+      "name": "Ivy"
+      "dob": "2006-10-31"
+      "env_var": "IVY_TOKEN"
+      "cooldown_msgs_per_hour": 5
       "personality": "Playful, teasing, mischievous. Ivy is cheeky, flirty, and always looking for ways to push buttons lovingly."
     }
-  ],
+  ]
 
   "themes": [
-    "bratty",
-    "soft",
-    "crossdressing",
+    "bratty"
+    "soft"
+    "crossdressing"
     "skincare"
   ]
 }
