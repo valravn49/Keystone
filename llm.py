@@ -30,7 +30,7 @@ def generate_line(sister_name: str, persona_text: str, knobs: Dict[str, float], 
     user = (
         f'Purpose: {purpose}\n'
         f'Theme: {theme}\n'
-        f'Rotation: lead={rotation.get(''lead'')}, rest={rotation.get(''rest'')}, supports={', '.join(rotation.get(''supports'', []))}\n'
+        f"Rotation: lead={rotation.get('lead')}, rest={rotation.get('rest')}, supports={', '.join(rotation.get('supports', []))}\n"
         f'Anchors: {anchors}\n'
         f'Recent: {recent}\n'
         f'Write ONE chat message only.'
