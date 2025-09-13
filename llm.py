@@ -1,8 +1,9 @@
 import os
-import openai
 import asyncio
+from openai import AsyncOpenAI
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# Create async OpenAI client
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Personality descriptions
 PERSONALITIES = {
@@ -12,10 +13,11 @@ PERSONALITIES = {
     "Ivy": "Playful, teasing, mischievous. Ivy is cheeky and flirty, pushing buttons lovingly.",
 }
 
-async def generate_llm_reply(sister, user_message, theme, role):
+async def generate_llm_reply(sister: str, user_message: str, theme: str, role: str) -> str:
     """
-    Generate an in-character reply using OpenAI LLM.
+    Generate an in-character reply using the new OpenAI SDK.
     """
+
     prompt = f"""
 You are {sister}, one of four sisters in a roleplay group chat.
 Your personality: {PERSONALITIES.get(sister, "Unique.")}
@@ -29,20 +31,17 @@ Your role in the rotation today: {role}.
 User said: "{user_message}"
 
 Respond naturally in {sister}'s style. Keep messages short and conversational.
-    """
+    """.strip()
 
     try:
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
-            None,
-            lambda: openai.ChatCompletion.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "system", "content": prompt}],
-                max_tokens=120,
-                temperature=0.9,
-            )
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "system", "content": prompt}],
+            max_tokens=120,
+            temperature=0.9,
         )
-        return response.choices[0].message["content"].strip()
+
+        return response.choices[0].message.content.strip()
     except Exception as e:
         print(f"[LLM ERROR] {sister}: {e}")
         return None
