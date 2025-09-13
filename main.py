@@ -125,47 +125,37 @@ async def send_morning_message():
     theme = get_current_theme()
     lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
 
-    # Lead always posts
-    try:
-        lead_msg = await generate_llm_reply(
-            sister=lead,
-            user_message="It’s the morning check-in, greet warmly and remind of today’s tasks.",
-            theme=theme,
-            role="lead"
-        )
-        if lead_msg:
-            await post_to_family(lead_msg, sender=lead)
-    except Exception as e:
-        print(f"[ERROR] LLM morning lead failed for {lead}: {e}")
+    # Lead sister: structured morning ritual
+    lead_msg = await generate_llm_reply(
+        sister=lead,
+        user_message="Give your good morning message, including rotation roles, theme, hygiene reminders, and discipline check.",
+        theme=theme,
+        role="lead"
+    )
+    await post_to_family(lead_msg, sender=lead)
 
-    # Supports ~50% chance
+    # Support sisters: add 1–3 sentence themed replies
     for s in supports:
-        if random.random() < 0.5:
-            try:
-                support_msg = await generate_llm_reply(
-                    sister=s,
-                    user_message="Add a short supportive note for the morning check-in.",
-                    theme=theme,
-                    role="support"
-                )
-                if support_msg:
-                    await post_to_family(support_msg, sender=s)
-            except Exception as e:
-                print(f"[ERROR] LLM morning support failed for {s}: {e}")
-
-    # Rest ~15% chance
-    if random.random() < 0.15:
-        try:
-            rest_msg = await generate_llm_reply(
-                sister=rest,
-                user_message="Say a very short note while resting, quiet but still present.",
+        if random.random() < 0.7:  # ~70% chance to chime in
+            reply = await generate_llm_reply(
+                sister=s,
+                user_message="Add a short supportive morning comment.",
                 theme=theme,
-                role="rest"
+                role="support"
             )
-            if rest_msg:
-                await post_to_family(rest_msg, sender=rest)
-        except Exception as e:
-            print(f"[ERROR] LLM morning rest failed for {rest}: {e}")
+            if reply:
+                await post_to_family(reply, sender=s)
+
+    # Rest sister: rare, subtle comment
+    if random.random() < 0.2:  # ~20% chance
+        rest_reply = await generate_llm_reply(
+            sister=rest,
+            user_message="Give a very short, quiet morning remark to show presence while resting.",
+            theme=theme,
+            role="rest"
+        )
+        if rest_reply:
+            await post_to_family(rest_reply, sender=rest)
 
     state["rotation_index"] += 1
     print(f"[SCHEDULER] Morning message completed with {lead} as lead")
@@ -176,50 +166,39 @@ async def send_night_message():
     theme = get_current_theme()
     lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
 
-    # Lead always posts
-    try:
-        lead_msg = await generate_llm_reply(
-            sister=lead,
-            user_message="It’s the nightly reflection, wish good night and remind them to log discipline checks.",
-            theme=theme,
-            role="lead"
-        )
-        if lead_msg:
-            await post_to_family(lead_msg, sender=lead)
-    except Exception as e:
-        print(f"[ERROR] LLM night lead failed for {lead}: {e}")
+    # Lead sister: structured night ritual
+    lead_msg = await generate_llm_reply(
+        sister=lead,
+        user_message="Give your good night message, thanking supporters, wishing rest to the resting sister, asking for one reflection, reminding about outfits, wake-up discipline, and overnight plug/service tasks.",
+        theme=theme,
+        role="lead"
+    )
+    await post_to_family(lead_msg, sender=lead)
 
-    # Supports ~50% chance
+    # Support sisters: soft good-night comments
     for s in supports:
-        if random.random() < 0.5:
-            try:
-                support_msg = await generate_llm_reply(
-                    sister=s,
-                    user_message="Add a short supportive note for the nightly reflection.",
-                    theme=theme,
-                    role="support"
-                )
-                if support_msg:
-                    await post_to_family(support_msg, sender=s)
-            except Exception as e:
-                print(f"[ERROR] LLM night support failed for {s}: {e}")
-
-    # Rest ~15% chance
-    if random.random() < 0.15:
-        try:
-            rest_msg = await generate_llm_reply(
-                sister=rest,
-                user_message="Say a very short quiet note before bed, while resting.",
+        if random.random() < 0.6:  # ~60% chance
+            reply = await generate_llm_reply(
+                sister=s,
+                user_message="Add a short supportive night comment.",
                 theme=theme,
-                role="rest"
+                role="support"
             )
-            if rest_msg:
-                await post_to_family(rest_msg, sender=rest)
-        except Exception as e:
-            print(f"[ERROR] LLM night rest failed for {rest}: {e}")
+            if reply:
+                await post_to_family(reply, sender=s)
+
+    # Rest sister: rare subtle remark
+    if random.random() < 0.15:
+        rest_reply = await generate_llm_reply(
+            sister=rest,
+            user_message="Give a very brief, quiet night remark while resting.",
+            theme=theme,
+            role="rest"
+        )
+        if rest_reply:
+            await post_to_family(rest_reply, sender=rest)
 
     print(f"[SCHEDULER] Night message completed with {lead} as lead")
-
 # ==============================
 # FastAPI App (for Railway)
 # ==============================
