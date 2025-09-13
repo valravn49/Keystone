@@ -8,7 +8,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime
 from fastapi import FastAPI
 
-from llm import generate_llm_reply   # LLM helper
+from llm import generate_llm_reply   # Your LLM helper
 
 # ==============================
 # Load config.json
@@ -118,74 +118,107 @@ async def post_to_family(message: str, sender=None):
                 break
 
 # ==============================
-# Scheduled Messages
+# Scheduled Messages (LLM-driven)
 # ==============================
 async def send_morning_message():
     rotation = get_today_rotation()
     theme = get_current_theme()
     lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
 
-    openings = {
-        "Aria": "🌅 Good morning, love. Let’s begin the day calmly and with order.",
-        "Selene": "🌅 Mmm… good morning, dreamer. Let’s flow softly into today together.",
-        "Cassandra": "🌅 Good morning. Stand tall, be proud, and show me your discipline today.",
-        "Ivy": "🌅 Hey cutie, morning! I bet you’re still warm in bed, but I’m watching~"
-    }
-    opening = openings.get(lead, f"🌅 Good morning from **{lead}**!")
+    # Lead always posts
+    try:
+        lead_msg = await generate_llm_reply(
+            sister=lead,
+            user_message="It’s the morning check-in, greet warmly and remind of today’s tasks.",
+            theme=theme,
+            role="lead"
+        )
+        if lead_msg:
+            await post_to_family(lead_msg, sender=lead)
+    except Exception as e:
+        print(f"[ERROR] LLM morning lead failed for {lead}: {e}")
 
-    msg = (
-        f"{opening}\n\n"
-        f"🌟 Lead: {lead} | 🌙 Rest: {rest} | ✨ Support: {', '.join(supports)}\n\n"
-        f"Today's weekly theme is **{theme}**.\n"
-        f"Remember:\n"
-        f"- Complete your chastity log.\n"
-        f"- Skincare morning routine.\n"
-        f"- Confirm morning cage hygiene checklist (`done`).\n"
-        f"- Evening journal later today.\n"
-        f"Formal outfits & training gear only for logging.\n"
-        f"Log wake-up time as discipline.\n"
-    )
-    await post_to_family(msg, sender=lead)
-
+    # Supports ~50% chance
     for s in supports:
-        await post_to_family(f"{s}: Supporting you today!", sender=s)
+        if random.random() < 0.5:
+            try:
+                support_msg = await generate_llm_reply(
+                    sister=s,
+                    user_message="Add a short supportive note for the morning check-in.",
+                    theme=theme,
+                    role="support"
+                )
+                if support_msg:
+                    await post_to_family(support_msg, sender=s)
+            except Exception as e:
+                print(f"[ERROR] LLM morning support failed for {s}: {e}")
 
+    # Rest ~15% chance
     if random.random() < 0.15:
-        await post_to_family(f"{rest}: Taking it easy today, but still here.", sender=rest)
+        try:
+            rest_msg = await generate_llm_reply(
+                sister=rest,
+                user_message="Say a very short note while resting, quiet but still present.",
+                theme=theme,
+                role="rest"
+            )
+            if rest_msg:
+                await post_to_family(rest_msg, sender=rest)
+        except Exception as e:
+            print(f"[ERROR] LLM morning rest failed for {rest}: {e}")
 
     state["rotation_index"] += 1
-    print(f"[SCHEDULER] Morning message sent by {lead}")
+    print(f"[SCHEDULER] Morning message completed with {lead} as lead")
+
 
 async def send_night_message():
     rotation = get_today_rotation()
     theme = get_current_theme()
     lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
 
-    openings = {
-        "Aria": "🌙 Good night, love. Rest peacefully, tomorrow is another steady step.",
-        "Selene": "🌙 Shhh… the night embraces you. Drift into dreams softly.",
-        "Cassandra": "🌙 Good night. You’ve had your orders—reflect and be honest with yourself.",
-        "Ivy": "🌙 Night night, sweet thing. Don’t think I won’t check in your dreams~"
-    }
-    opening = openings.get(lead, f"🌙 Good night from **{lead}**.")
+    # Lead always posts
+    try:
+        lead_msg = await generate_llm_reply(
+            sister=lead,
+            user_message="It’s the nightly reflection, wish good night and remind them to log discipline checks.",
+            theme=theme,
+            role="lead"
+        )
+        if lead_msg:
+            await post_to_family(lead_msg, sender=lead)
+    except Exception as e:
+        print(f"[ERROR] LLM night lead failed for {lead}: {e}")
 
-    msg = (
-        f"{opening}\n\n"
-        f"🌟 Lead: {lead} | 🌙 Rest: {rest} | ✨ Support: {', '.join(supports)}\n\n"
-        f"Reflection: Did you rise promptly at 6:00am? Log success or slip.\n"
-        f"Tonight’s theme flavor is still **{theme}**.\n"
-        f"Formal outfits & training gear only are logged (no underwear/loungewear).\n"
-        f"Overnight plug check: confirm if planned.\n"
-    )
-    await post_to_family(msg, sender=lead)
-
+    # Supports ~50% chance
     for s in supports:
-        await post_to_family(f"{s}: Rest well, I’ve got your back.", sender=s)
+        if random.random() < 0.5:
+            try:
+                support_msg = await generate_llm_reply(
+                    sister=s,
+                    user_message="Add a short supportive note for the nightly reflection.",
+                    theme=theme,
+                    role="support"
+                )
+                if support_msg:
+                    await post_to_family(support_msg, sender=s)
+            except Exception as e:
+                print(f"[ERROR] LLM night support failed for {s}: {e}")
 
+    # Rest ~15% chance
     if random.random() < 0.15:
-        await post_to_family(f"{rest}: Quietly wishing you good night in my own way.", sender=rest)
+        try:
+            rest_msg = await generate_llm_reply(
+                sister=rest,
+                user_message="Say a very short quiet note before bed, while resting.",
+                theme=theme,
+                role="rest"
+            )
+            if rest_msg:
+                await post_to_family(rest_msg, sender=rest)
+        except Exception as e:
+            print(f"[ERROR] LLM night rest failed for {rest}: {e}")
 
-    print(f"[SCHEDULER] Night message sent by {lead}")
+    print(f"[SCHEDULER] Night message completed with {lead} as lead")
 
 # ==============================
 # FastAPI App (for Railway)
