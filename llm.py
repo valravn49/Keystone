@@ -1,52 +1,48 @@
 import os
 import openai
+import asyncio
 
-# Get API key from environment
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-if not OPENAI_API_KEY:
-    print("[llm] WARNING: OPENAI_API_KEY not found in environment")
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-openai.api_key = OPENAI_API_KEY
+# Personality descriptions
+PERSONALITIES = {
+    "Aria": "Calm, orderly, nurturing. Aria speaks warmly and clearly.",
+    "Selene": "Gentle, dreamy, caring. Selene leans spiritual and soft.",
+    "Cassandra": "Strict, commanding, proud. Cassandra enforces discipline but appreciates obedience.",
+    "Ivy": "Playful, teasing, mischievous. Ivy is cheeky and flirty, pushing buttons lovingly.",
+}
 
-
-def generate_llm_reply(sister_name: str, message: str, rotation: dict, theme: str) -> str:
+async def generate_llm_reply(sister, user_message, theme, role):
     """
-    Generate a reply for the given sister using the OpenAI API.
-
-    Args:
-        sister_name (str): The speaking sister (e.g. "Aria").
-        message (str): The incoming message to respond to.
-        rotation (dict): Current rotation (lead, rest, supports).
-        theme (str): Current weekly novelty theme.
-
-    Returns:
-        str: The generated reply text.
+    Generate an in-character reply using OpenAI LLM.
     """
+    prompt = f"""
+You are {sister}, one of four sisters in a roleplay group chat.
+Your personality: {PERSONALITIES.get(sister, "Unique.")}
 
-    system_prompt = f"""
-You are {sister_name}, one of four AI sisters in a family group chat.
-Each sister has her own personality and role (lead, support, rest).
-The weekly theme is: {theme}.
-Rotation today: lead={rotation.get("lead")}, rest={rotation.get("rest")}, supports={", ".join(rotation.get("supports", []))}.
-Stay fully in-character when replying.
-"""
+Current weekly theme: {theme}.
+Your role in the rotation today: {role}.
+- Lead: always active, primary voice.
+- Support: secondary voice, chimes in warmly.
+- Rest: quiet but occasionally adds a short note.
 
-    print(f"[llm] Generating reply for {sister_name} | theme={theme}")
+User said: "{user_message}"
+
+Respond naturally in {sister}'s style. Keep messages short and conversational.
+    """
 
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4o-mini",  # lightweight but strong
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": message},
-            ],
-            max_tokens=150,
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: openai.ChatCompletion.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "system", "content": prompt}],
+                max_tokens=120,
+                temperature=0.9,
+            )
         )
-
-        reply = response["choices"][0]["message"]["content"].strip()
-        print(f"[llm] {sister_name} reply: {reply}")
-        return reply
-
+        return response.choices[0].message["content"].strip()
     except Exception as e:
-        print(f"[llm] ERROR generating reply for {sister_name}: {e}")
-        return f"({sister_name} seems quiet right now.)"
+        print(f"[LLM ERROR] {sister}: {e}")
+        return None
