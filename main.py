@@ -5,8 +5,8 @@ import discord
 import asyncio
 from discord.ext import commands
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from datetime import datetime, timedelta
-from fastapi import FastAPI   # NEW
+from datetime import datetime
+from fastapi import FastAPI
 
 # ==============================
 # Load config.json
@@ -55,7 +55,6 @@ def get_today_rotation():
     return {"lead": lead, "rest": rest, "supports": supports}
 
 def get_current_theme():
-    # Rotate every Monday
     today = datetime.now().date()
     if state["last_theme_update"] is None or (today.weekday() == 0 and state["last_theme_update"] != today):
         state["theme_index"] = (state["theme_index"] + 1) % len(THEMES)
@@ -120,20 +119,23 @@ async def send_night_message():
     print(f"[SCHEDULER] Night message sent by {lead}")
 
 # ==============================
-# Startup & Scheduler
+# FastAPI App (for Railway)
 # ==============================
-async def start_all():
+app = FastAPI()
+
+@app.on_event("startup")
+async def startup_event():
+    print("[SYSTEM] FastAPI startup — launching scheduler + bots")
+
     scheduler = AsyncIOScheduler()
     scheduler.add_job(send_morning_message, "cron", hour=6, minute=0)
     scheduler.add_job(send_night_message, "cron", hour=22, minute=0)
     scheduler.start()
 
-    await asyncio.gather(*[s.start(s.token) for s in sisters])
-
-# ==============================
-# FastAPI App (for Railway)
-# ==============================
-app = FastAPI()
+    # Start bots without blocking FastAPI
+    for s in sisters:
+        asyncio.create_task(s.start(s.token))
+    print("[SYSTEM] Bots are starting…")
 
 @app.get("/health")
 async def health():
@@ -149,6 +151,6 @@ async def status():
         "theme": theme,
     }
 
-# If you run it directly (not with uvicorn)
+# Local testing
 if __name__ == "__main__":
-    asyncio.run(start_all())
+    asyncio.run(startup_event())
