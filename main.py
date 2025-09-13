@@ -233,3 +233,26 @@ async def force_rotate():
     state["rotation_index"] += 1
     rotation = get_today_rotation()
     return {"status": "rotation advanced", "new_lead": rotation["lead"]}
+
+# ================
+# Debug / Manual
+# ================
+@app.get("/debug")
+async def debug():
+    return {
+        "tokens_loaded": [s.sister_info["name"] for s in sisters],
+        "ready_bots": [s.sister_info["name"] for s in sisters if s.is_ready()],
+        "rotation_index": state["rotation_index"],
+        "theme_index": state["theme_index"],
+        "last_theme_update": str(state["last_theme_update"]),
+    }
+
+@app.post("/force-morning")
+async def force_morning():
+    await send_morning_message()
+    return {"status": "morning message forced"}
+
+@app.post("/force-night")
+async def force_night():
+    await send_night_message()
+    return {"status": "night message forced"}
