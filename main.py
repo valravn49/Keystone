@@ -68,6 +68,7 @@ async def post_to_family(message: str):
                 channel = bot.get_channel(FAMILY_CHANNEL_ID)
                 if channel:
                     await channel.send(message)
+                    print(f"[POST] {bot.sister_info['name']} sent a message.")
                 else:
                     print(f"[ERROR] Channel {FAMILY_CHANNEL_ID} not found for {bot.sister_info['name']}")
             except Exception as e:
@@ -147,9 +148,33 @@ async def status():
     theme = get_current_theme()
     return {
         "bots": [s.sister_info["name"] for s in sisters],
+        "ready": [s.sister_info["name"] for s in sisters if s.is_ready()],
         "rotation": rotation,
         "theme": theme,
     }
+
+# ================
+# Debug / Manual
+# ================
+@app.get("/debug")
+async def debug():
+    return {
+        "tokens_loaded": [s.sister_info["name"] for s in sisters],
+        "ready_bots": [s.sister_info["name"] for s in sisters if s.is_ready()],
+        "rotation_index": state["rotation_index"],
+        "theme_index": state["theme_index"],
+        "last_theme_update": str(state["last_theme_update"]),
+    }
+
+@app.post("/force-morning")
+async def force_morning():
+    await send_morning_message()
+    return {"status": "morning message forced"}
+
+@app.post("/force-night")
+async def force_night():
+    await send_night_message()
+    return {"status": "night message forced"}
 
 # Local testing
 if __name__ == "__main__":
