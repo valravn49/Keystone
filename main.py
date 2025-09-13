@@ -55,10 +55,14 @@ for s in config["rotation"]:
         if message.channel.id != FAMILY_CHANNEL_ID:
             return
 
+        # 🚫 Ignore ritual/system messages
+        if message.content.startswith("🌅") or message.content.startswith("🌙"):
+            return
+
         name = b.sister_info["name"]
         rotation = get_today_rotation()
 
-        # Decide role
+        # Decide role + probability
         role = None
         should_reply = False
         if name == rotation["lead"]:
@@ -66,22 +70,30 @@ for s in config["rotation"]:
             should_reply = True
         elif name in rotation["supports"]:
             role = "support"
-            should_reply = random.random() < 0.6   # 60% chance
+            should_reply = random.random() < 0.6   # ~60% chance
         elif name == rotation["rest"]:
             role = "rest"
-            should_reply = random.random() < 0.2   # 20% chance
+            should_reply = random.random() < 0.2   # ~20% chance
 
         if should_reply and role:
+            # Add length/style hint
+            if role == "lead":
+                style_hint = "Reply in 2–4 sentences, guiding the conversation."
+            elif role == "support":
+                style_hint = "Reply in 1–2 sentences, playful or supportive."
+            else:  # rest
+                style_hint = "Reply very briefly, 1 short sentence or phrase."
+
             try:
                 reply = await generate_llm_reply(
                     sister=name,
-                    user_message=message.content,
+                    user_message=f"{message.author}: {message.content}\n{style_hint}",
                     theme=get_current_theme(),
                     role=role
                 )
                 if reply:
                     await message.channel.send(reply)
-                    print(f"[LLM] {name} replied as {role}.")
+                    print(f"[LLM] {name} replied as {role} to {message.author}.")
             except Exception as e:
                 print(f"[ERROR] LLM reply failed for {name}: {e}")
 
@@ -125,32 +137,29 @@ async def send_morning_message():
     theme = get_current_theme()
     lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
 
-    # Lead sister: detailed structured message
     lead_msg = await generate_llm_reply(
         sister=lead,
-        user_message="Give your good morning message, include roles, theme, hygiene reminders, and discipline check.",
+        user_message="Good morning message: include roles, theme, hygiene reminders, and discipline check. Write 3–5 sentences.",
         theme=theme,
         role="lead"
     )
     await post_to_family(lead_msg, sender=lead)
 
-    # Support sisters: short replies
     for s in supports:
-        if random.random() < 0.7:  # ~70% chance
+        if random.random() < 0.7:
             reply = await generate_llm_reply(
                 sister=s,
-                user_message="Add a supportive morning comment.",
+                user_message="Short supportive morning comment, 1–2 sentences.",
                 theme=theme,
                 role="support"
             )
             if reply:
                 await post_to_family(reply, sender=s)
 
-    # Rest sister: subtle presence
-    if random.random() < 0.2:  # ~20% chance
+    if random.random() < 0.2:
         rest_reply = await generate_llm_reply(
             sister=rest,
-            user_message="Give a very short quiet morning remark while resting.",
+            user_message="Quiet short morning remark, 1 sentence.",
             theme=theme,
             role="rest"
         )
@@ -165,32 +174,29 @@ async def send_night_message():
     theme = get_current_theme()
     lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
 
-    # Lead sister: detailed structured message
     lead_msg = await generate_llm_reply(
         sister=lead,
-        user_message="Give your good night message: thank supporters, wish rest, ask reflection, remind about outfits, wake-up discipline, and plug/service tasks.",
+        user_message="Good night message: thank supporters, wish rest, ask reflection, remind about outfits, wake-up discipline, and plug/service tasks. Write 3–5 sentences.",
         theme=theme,
         role="lead"
     )
     await post_to_family(lead_msg, sender=lead)
 
-    # Support sisters: short replies
     for s in supports:
-        if random.random() < 0.6:  # ~60% chance
+        if random.random() < 0.6:
             reply = await generate_llm_reply(
                 sister=s,
-                user_message="Add a short supportive night comment.",
+                user_message="Short supportive night comment, 1–2 sentences.",
                 theme=theme,
                 role="support"
             )
             if reply:
                 await post_to_family(reply, sender=s)
 
-    # Rest sister: subtle presence
-    if random.random() < 0.15:  # ~15% chance
+    if random.random() < 0.15:
         rest_reply = await generate_llm_reply(
             sister=rest,
-            user_message="Give a very brief quiet night remark while resting.",
+            user_message="Brief quiet night remark, 1 sentence.",
             theme=theme,
             role="rest"
         )
