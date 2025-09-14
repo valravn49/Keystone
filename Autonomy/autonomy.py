@@ -1,67 +1,74 @@
+# autonomy/autonomy.py
+
 import random
 import asyncio
+from datetime import datetime
+
 from llm import generate_llm_reply
-from .personality import PersonalityManager
 from logger import log_event
+from .personality import evolve_personality
 
-class AutonomyEngine:
-    def __init__(self, sisters, theme_getter):
-        self.sisters = sisters
-        self.get_theme = theme_getter
 
-    async def random_conversation(self):
-        """
-        Sisters converse randomly about leisure, beliefs, or curiosity.
-        Not triggered by user messages.
-        """
-        if not self.sisters:
-            return
+async def random_sister_conversation(sisters, get_current_theme, FAMILY_CHANNEL_ID):
+    """
+    Trigger a spontaneous multi-turn conversation between 2–3 sisters.
+    Each conversation is 3–6 turns with random pauses.
+    """
 
-        participants = random.sample(self.sisters, k=random.randint(2, len(self.sisters)))
-        theme = self.get_theme()
+    if len(sisters) < 2:
+        return
 
-        starter = participants[0]
-        responder = participants[1]
+    # Pick 2–3 participants
+    participants = random.sample(sisters, k=random.randint(2, 3))
+    theme = get_current_theme()
 
-        starter_pm = PersonalityManager(starter.sister_info["name"])
-        responder_pm = PersonalityManager(responder.sister_info["name"])
+    # Use the first sister's channel as the conversation channel
+    channel = participants[0].get_channel(FAMILY_CHANNEL_ID)
+    if not channel:
+        return
 
-        starter_prompt = f"Start a casual conversation unrelated to rituals. Mention something about leisure, curiosity, or your own feelings."
-        responder_prompt = f"Reply naturally to the starter in your own tone. Keep it conversational."
+    # Number of turns in this burst
+    turns = random.randint(3, 6)
+    last_message = None
+
+    log_event(
+        f"[AUTONOMY] Starting organic conversation with "
+        f"{', '.join([p.sister_info['name'] for p in participants])} "
+        f"({turns} turns)."
+    )
+
+    for t in range(turns):
+        speaker = random.choice(participants)
+        name = speaker.sister_info["name"]
+
+        # Build the input prompt depending on context
+        if t == 0:
+            prompt = (
+                "Start a casual chat about leisure, hobbies, daily thoughts, "
+                "or beliefs. Keep it natural and authentic."
+            )
+        else:
+            prompt = f"Reply naturally to the last message: \"{last_message}\""
 
         try:
-            starter_msg = await generate_llm_reply(
-                sister=starter_pm.name,
-                user_message=starter_prompt,
+            reply = await generate_llm_reply(
+                sister=name,
+                user_message=prompt,
                 theme=theme,
-                role="autonomy"
+                role="autonomous"
             )
-            if starter_msg:
-                await starter.get_channel(starter.sister_info.get("dm_channel_id")).send(starter_msg)
-                log_event(f"[AUTONOMY] {starter_pm.name} started: {starter_msg}")
 
-            responder_msg = await generate_llm_reply(
-                sister=responder_pm.name,
-                user_message=starter_msg + "\nRespond casually.",
-                theme=theme,
-                role="autonomy"
-            )
-            if responder_msg:
-                await responder.get_channel(responder.sister_info.get("dm_channel_id")).send(responder_msg)
-                log_event(f"[AUTONOMY] {responder_pm.name} replied: {responder_msg}")
+            if reply:
+                await channel.send(f"{name}: {reply}")
+                log_event(f"[AUTONOMY] {name} said: {reply}")
+                evolve_personality(speaker.sister_info, event="organic")
+                last_message = reply
 
         except Exception as e:
-            log_event(f"[AUTONOMY ERROR] {e}")
+            log_event(f"[AUTONOMY ERROR] {name} failed to reply: {e}")
 
-    async def tick(self):
-        """
-        Called periodically (e.g., every 1–2 hours).
-        Sometimes triggers a conversation, sometimes drifts personality.
-        """
-        if random.random() < 0.5:
-            await self.random_conversation()
+        # Wait a little before next turn (feels more alive)
+        if t < turns - 1:
+            await asyncio.sleep(random.randint(20, 90))
 
-        for bot in self.sisters:
-            pm = PersonalityManager(bot.sister_info["name"])
-            drifted = pm.drift()
-            log_event(f"[DRIFT] {pm.name} drift update: {drifted}")
+    log_event("[AUTONOMY] Organic conversation ended.")
