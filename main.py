@@ -86,7 +86,7 @@ for s in config["rotation"]:
                     role="dm"
                 )
                 if reply:
-                    await message.channel.send(reply)
+                    await message.channel.send(reply)  # no prefix
                     log_event(f"[DM] {name} replied to {message.author}: {reply}")
                     append_conversation_log(
                         sister=name,
@@ -135,7 +135,7 @@ for s in config["rotation"]:
                     role=role
                 )
                 if reply:
-                    await message.channel.send(reply)
+                    await message.channel.send(reply)  # no prefix
                     log_event(f"{name} replied as {role} to {message.author}: {reply}")
                     append_conversation_log(
                         sister=name,
@@ -172,7 +172,7 @@ async def post_to_family(message: str, sender=None):
                 try:
                     channel = bot.get_channel(FAMILY_CHANNEL_ID)
                     if channel:
-                        await channel.send(message)
+                        await channel.send(message)  # no prefix
                         log_event(f"{bot.sister_info['name']} posted: {message}")
                     else:
                         print(f"[ERROR] Channel {FAMILY_CHANNEL_ID} not found for {bot.sister_info['name']}")
@@ -264,47 +264,6 @@ async def send_night_message():
     log_event(f"[SCHEDULER] Night message completed with {lead} as lead")
 
 # ==============================
-# Aria Slash Commands
-# ==============================
-if aria_bot:
-    tree = aria_bot.tree
-
-    @tree.command(name="force-rotate", description="Manually advance sister rotation")
-    async def slash_force_rotate(interaction: discord.Interaction):
-        state["rotation_index"] += 1
-        rotation = get_today_rotation()
-        log_event(f"[SLASH] Rotation advanced via slash. New lead: {rotation['lead']}")
-        await interaction.response.send_message(
-            f"🔄 Rotation advanced. New lead: **{rotation['lead']}**"
-        )
-
-    @tree.command(name="force-morning", description="Force the morning message")
-    async def slash_force_morning(interaction: discord.Interaction):
-        await send_morning_message()
-        await interaction.response.send_message("☀️ Morning message forced.")
-
-    @tree.command(name="force-night", description="Force the night message")
-    async def slash_force_night(interaction: discord.Interaction):
-        await send_night_message()
-        await interaction.response.send_message("🌙 Night message forced.")
-
-    # Structured logs
-    @tree.command(name="log-cage", description="Log a cage status update")
-    async def slash_log_cage(interaction: discord.Interaction, status: str, notes: str = ""):
-        log_cage_event(str(interaction.user), status, notes)
-        await interaction.response.send_message(f"🔒 Cage log saved: {status} {notes}")
-
-    @tree.command(name="log-plug", description="Log a plug training session")
-    async def slash_log_plug(interaction: discord.Interaction, size: str, duration: str, notes: str = ""):
-        log_plug_event(str(interaction.user), size, duration, notes)
-        await interaction.response.send_message(f"🍑 Plug log saved: {size} for {duration}")
-
-    @tree.command(name="log-service", description="Log a service task completion")
-    async def slash_log_service(interaction: discord.Interaction, task: str, result: str, notes: str = ""):
-        log_service_event(str(interaction.user), task, result, notes)
-        await interaction.response.send_message(f"📝 Service log saved: {task} → {result}")
-
-# ==============================
 # FastAPI App
 # ==============================
 app = FastAPI()
@@ -319,44 +278,3 @@ async def startup_event():
     for s in sisters:
         asyncio.create_task(s.start(s.token))
     log_event("[SYSTEM] Bots started with scheduler active.")
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-@app.get("/status")
-async def status():
-    rotation = get_today_rotation()
-    theme = get_current_theme()
-    return {
-        "bots": [s.sister_info["name"] for s in sisters],
-        "ready": [s.sister_info["name"] for s in sisters if s.is_ready()],
-        "rotation": rotation,
-        "theme": theme,
-    }
-
-@app.get("/logs", response_class=PlainTextResponse)
-async def get_logs(lines: int = 50):
-    try:
-        with open(LOG_FILE, "r", encoding="utf-8") as f:
-            all_lines = f.readlines()
-        return "".join(all_lines[-lines:])
-    except FileNotFoundError:
-        return "[LOGGER] No memory_log.txt found."
-
-@app.post("/force-rotate")
-async def force_rotate():
-    state["rotation_index"] += 1
-    rotation = get_today_rotation()
-    log_event(f"Rotation manually advanced. New lead: {rotation['lead']}")
-    return {"status": "rotation advanced", "new_lead": rotation["lead"]}
-
-@app.post("/force-morning")
-async def force_morning():
-    await send_morning_message()
-    return {"status": "morning message forced"}
-
-@app.post("/force-night")
-async def force_night():
-    await send_night_message()
-    return {"status": "night message forced"}
