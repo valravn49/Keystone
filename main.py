@@ -9,10 +9,11 @@ from datetime import datetime
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 
-from llm import generate_llm_reply   # LLM helper
+from llm import generate_llm_reply   # Your LLM helper
 from logger import (
     log_event, LOG_FILE,
-    append_discipline_log, append_service_log
+    append_conversation_log, append_ritual_log,
+    log_cage_event, log_plug_event, log_service_event
 )
 
 # ==============================
@@ -72,49 +73,45 @@ for s in config["rotation"]:
         if message.author == b.user:
             return
 
-        # ========== DM Handling ==========
+        # Handle DMs
         if isinstance(message.channel, discord.DMChannel):
             if not DM_ENABLED:
                 return
             name = b.sister_info["name"]
-            lower = message.content.lower()
-
             try:
-                if "cage" in lower:
-                    append_discipline_log(str(message.author), "cage", message.content)
-                    await message.channel.send("🔒 Cage log noted.")
-                elif "plug" in lower:
-                    append_discipline_log(str(message.author), "plug", message.content)
-                    await message.channel.send("🍑 Plug log noted.")
-                elif "service" in lower or "task" in lower:
-                    append_service_log(str(message.author), "task", message.content)
-                    await message.channel.send("📋 Service log noted.")
-                else:
-                    reply = await generate_llm_reply(
+                reply = await generate_llm_reply(
+                    sister=name,
+                    user_message=message.content,
+                    theme=get_current_theme(),
+                    role="dm"
+                )
+                if reply:
+                    await message.channel.send(reply)
+                    log_event(f"[DM] {name} replied to {message.author}: {reply}")
+                    append_conversation_log(
                         sister=name,
-                        user_message=message.content,
+                        role="dm",
                         theme=get_current_theme(),
-                        role="dm"
+                        user_message=message.content,
+                        content=reply
                     )
-                    if reply:
-                        await message.channel.send(reply)
-                        log_event(f"[DM] {name} replied to {message.author}: {reply}")
             except Exception as e:
                 print(f"[ERROR] DM reply failed for {name}: {e}")
                 log_event(f"[ERROR] DM reply failed for {name}: {e}")
             return
 
-        # ========== Family Channel Handling ==========
+        # Ignore outside family channel
         if message.channel.id != FAMILY_CHANNEL_ID:
             return
+        # Ignore ritual/system messages
         if message.content.startswith("🌅") or message.content.startswith("🌙"):
             return
 
         name = b.sister_info["name"]
         rotation = get_today_rotation()
-
         role = None
         should_reply = False
+
         if name == rotation["lead"]:
             role = "lead"; should_reply = True
         elif name in rotation["supports"]:
@@ -140,6 +137,13 @@ for s in config["rotation"]:
                 if reply:
                     await message.channel.send(reply)
                     log_event(f"{name} replied as {role} to {message.author}: {reply}")
+                    append_conversation_log(
+                        sister=name,
+                        role=role,
+                        theme=get_current_theme(),
+                        user_message=message.content,
+                        content=reply
+                    )
             except Exception as e:
                 print(f"[ERROR] LLM reply failed for {name}: {e}")
                 log_event(f"[ERROR] LLM reply failed for {name}: {e}")
@@ -161,26 +165,144 @@ def get_current_theme():
         state["last_theme_update"] = today
     return THEMES[state["theme_index"]]
 
+async def post_to_family(message: str, sender=None):
+    for bot in sisters:
+        if bot.is_ready():
+            if not sender or bot.sister_info["name"] == sender:
+                try:
+                    channel = bot.get_channel(FAMILY_CHANNEL_ID)
+                    if channel:
+                        await channel.send(message)
+                        log_event(f"{bot.sister_info['name']} posted: {message}")
+                    else:
+                        print(f"[ERROR] Channel {FAMILY_CHANNEL_ID} not found for {bot.sister_info['name']}")
+                except Exception as e:
+                    print(f"[ERROR] Failed to send with {bot.sister_info['name']}: {e}")
+                    log_event(f"[ERROR] Failed to send with {bot.sister_info['name']}: {e}")
+                break
+
+# ==============================
+# Scheduled Messages (LLM-driven)
+# ==============================
+async def send_morning_message():
+    rotation = get_today_rotation()
+    theme = get_current_theme()
+    lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
+
+    lead_msg = await generate_llm_reply(
+        sister=lead,
+        user_message="Good morning message: include roles, theme, hygiene reminders, and discipline check. Write 3–5 sentences.",
+        theme=theme,
+        role="lead"
+    )
+    await post_to_family(lead_msg, sender=lead)
+    append_ritual_log(lead, "lead", theme, lead_msg)
+
+    for s in supports:
+        if random.random() < 0.7:
+            reply = await generate_llm_reply(
+                sister=s,
+                user_message="Short supportive morning comment, 1–2 sentences.",
+                theme=theme,
+                role="support"
+            )
+            if reply:
+                await post_to_family(reply, sender=s)
+                append_ritual_log(s, "support", theme, reply)
+
+    if random.random() < 0.2:
+        rest_reply = await generate_llm_reply(
+            sister=rest,
+            user_message="Quiet short morning remark, 1 sentence.",
+            theme=theme,
+            role="rest"
+        )
+        if rest_reply:
+            await post_to_family(rest_reply, sender=rest)
+            append_ritual_log(rest, "rest", theme, rest_reply)
+
+    state["rotation_index"] += 1
+    log_event(f"[SCHEDULER] Morning message completed with {lead} as lead")
+
+async def send_night_message():
+    rotation = get_today_rotation()
+    theme = get_current_theme()
+    lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
+
+    lead_msg = await generate_llm_reply(
+        sister=lead,
+        user_message="Good night message: thank supporters, wish rest, ask reflection, remind about outfits, wake-up discipline, and plug/service tasks. Write 3–5 sentences.",
+        theme=theme,
+        role="lead"
+    )
+    await post_to_family(lead_msg, sender=lead)
+    append_ritual_log(lead, "lead", theme, lead_msg)
+
+    for s in supports:
+        if random.random() < 0.6:
+            reply = await generate_llm_reply(
+                sister=s,
+                user_message="Short supportive night comment, 1–2 sentences.",
+                theme=theme,
+                role="support"
+            )
+            if reply:
+                await post_to_family(reply, sender=s)
+                append_ritual_log(s, "support", theme, reply)
+
+    if random.random() < 0.15:
+        rest_reply = await generate_llm_reply(
+            sister=rest,
+            user_message="Brief quiet night remark, 1 sentence.",
+            theme=theme,
+            role="rest"
+        )
+        if rest_reply:
+            await post_to_family(rest_reply, sender=rest)
+            append_ritual_log(rest, "rest", theme, rest_reply)
+
+    log_event(f"[SCHEDULER] Night message completed with {lead} as lead")
+
 # ==============================
 # Aria Slash Commands
 # ==============================
 if aria_bot:
     tree = aria_bot.tree
 
-    @tree.command(name="log-cage", description="Log cage status")
-    async def slash_log_cage(interaction: discord.Interaction, status: str):
-        append_discipline_log(str(interaction.user), "cage", status)
-        await interaction.response.send_message(f"🔒 Cage log saved: {status}")
+    @tree.command(name="force-rotate", description="Manually advance sister rotation")
+    async def slash_force_rotate(interaction: discord.Interaction):
+        state["rotation_index"] += 1
+        rotation = get_today_rotation()
+        log_event(f"[SLASH] Rotation advanced via slash. New lead: {rotation['lead']}")
+        await interaction.response.send_message(
+            f"🔄 Rotation advanced. New lead: **{rotation['lead']}**"
+        )
 
-    @tree.command(name="log-plug", description="Log plug training")
-    async def slash_log_plug(interaction: discord.Interaction, duration: str, size: str):
-        append_discipline_log(str(interaction.user), "plug", f"{duration}, size={size}")
-        await interaction.response.send_message(f"🍑 Plug log saved: {duration}, {size}")
+    @tree.command(name="force-morning", description="Force the morning message")
+    async def slash_force_morning(interaction: discord.Interaction):
+        await send_morning_message()
+        await interaction.response.send_message("☀️ Morning message forced.")
 
-    @tree.command(name="log-service", description="Log service/submission task")
-    async def slash_log_service(interaction: discord.Interaction, task: str, outcome: str):
-        append_service_log(str(interaction.user), task, outcome)
-        await interaction.response.send_message(f"📋 Service log saved: {task} → {outcome}")
+    @tree.command(name="force-night", description="Force the night message")
+    async def slash_force_night(interaction: discord.Interaction):
+        await send_night_message()
+        await interaction.response.send_message("🌙 Night message forced.")
+
+    # Structured logs
+    @tree.command(name="log-cage", description="Log a cage status update")
+    async def slash_log_cage(interaction: discord.Interaction, status: str, notes: str = ""):
+        log_cage_event(str(interaction.user), status, notes)
+        await interaction.response.send_message(f"🔒 Cage log saved: {status} {notes}")
+
+    @tree.command(name="log-plug", description="Log a plug training session")
+    async def slash_log_plug(interaction: discord.Interaction, size: str, duration: str, notes: str = ""):
+        log_plug_event(str(interaction.user), size, duration, notes)
+        await interaction.response.send_message(f"🍑 Plug log saved: {size} for {duration}")
+
+    @tree.command(name="log-service", description="Log a service task completion")
+    async def slash_log_service(interaction: discord.Interaction, task: str, result: str, notes: str = ""):
+        log_service_event(str(interaction.user), task, result, notes)
+        await interaction.response.send_message(f"📝 Service log saved: {task} → {result}")
 
 # ==============================
 # FastAPI App
@@ -190,7 +312,10 @@ app = FastAPI()
 @app.on_event("startup")
 async def startup_event():
     scheduler = AsyncIOScheduler()
+    scheduler.add_job(send_morning_message, "cron", hour=6, minute=0)
+    scheduler.add_job(send_night_message, "cron", hour=22, minute=0)
     scheduler.start()
+
     for s in sisters:
         asyncio.create_task(s.start(s.token))
     log_event("[SYSTEM] Bots started with scheduler active.")
@@ -198,6 +323,17 @@ async def startup_event():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+@app.get("/status")
+async def status():
+    rotation = get_today_rotation()
+    theme = get_current_theme()
+    return {
+        "bots": [s.sister_info["name"] for s in sisters],
+        "ready": [s.sister_info["name"] for s in sisters if s.is_ready()],
+        "rotation": rotation,
+        "theme": theme,
+    }
 
 @app.get("/logs", response_class=PlainTextResponse)
 async def get_logs(lines: int = 50):
@@ -207,3 +343,20 @@ async def get_logs(lines: int = 50):
         return "".join(all_lines[-lines:])
     except FileNotFoundError:
         return "[LOGGER] No memory_log.txt found."
+
+@app.post("/force-rotate")
+async def force_rotate():
+    state["rotation_index"] += 1
+    rotation = get_today_rotation()
+    log_event(f"Rotation manually advanced. New lead: {rotation['lead']}")
+    return {"status": "rotation advanced", "new_lead": rotation["lead"]}
+
+@app.post("/force-morning")
+async def force_morning():
+    await send_morning_message()
+    return {"status": "morning message forced"}
+
+@app.post("/force-night")
+async def force_night():
+    await send_night_message()
+    return {"status": "night message forced"}
