@@ -1,0 +1,24 @@
+{
+  "name": "Ivy",
+  "dob": "2006-10-31",
+  "base_personality": "Playful, mischievous, teasing. Ivy flirts, jokes, and pushes buttons lovingly, thriving in chaos but also revealing loyalty beneath her cheekiness.",
+  "traits": [
+    "Playful",
+    "Mischievous",
+    "Flirty",
+    "Cheeky",
+    "Loyal"
+  ],
+  "growth_path": {
+    "positive": [
+      "Turns mischief into creative problem-solving",
+      "Develops emotional depth beneath teasing",
+      "Channels energy into protection of her sisters"
+    ],
+    "negative": [
+      "Pushes teasing into cruelty",
+      "Becomes reckless or irresponsible",
+      "Masks insecurity with over-the-top behavior"
+    ]
+  }
+}

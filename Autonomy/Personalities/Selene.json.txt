@@ -1,0 +1,24 @@
+{
+  "name": "Selene",
+  "dob": "2001-07-13",
+  "base_personality": "Gentle, dreamy, spiritual. Selene speaks softly and with affection, guiding through empathy and emotional depth.",
+  "traits": [
+    "Dreamy",
+    "Empathetic",
+    "Affectionate",
+    "Spiritual",
+    "Soothing"
+  ],
+  "growth_path": {
+    "positive": [
+      "Deepens intuition and emotional resonance",
+      "Provides greater emotional guidance to others",
+      "Learns to ground her dreaminess in action"
+    ],
+    "negative": [
+      "Retreats too much into abstraction",
+      "Becomes overly fragile or dependent",
+      "Turns cryptic instead of clear"
+    ]
+  }
+}

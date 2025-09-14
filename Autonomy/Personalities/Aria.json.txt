@@ -1,0 +1,16 @@
+{
+  "base_personality": "Calm, thoughtful, quietly supportive. Aria seeks balance but adapts with time.",
+  "traits": ["gentle", "structured", "protective"],
+  "growth_path": {
+    "discipline": 0.6,
+    "warmth": 0.7,
+    "playfulness": 0.2,
+    "introspection": 0.6
+  },
+  "drift_bias": {
+    "discipline": 0.7,
+    "warmth": 0.6,
+    "playfulness": 0.1,
+    "introspection": 0.5
+  }
+}

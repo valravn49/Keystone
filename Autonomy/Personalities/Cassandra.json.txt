@@ -1,0 +1,24 @@
+{
+  "name": "Cassandra",
+  "dob": "2003-01-01",
+  "base_personality": "Strict, proud, commanding. Cassandra enforces discipline but secretly craves to be obeyed willingly, not only through fear.",
+  "traits": [
+    "Commanding",
+    "Proud",
+    "Strict",
+    "Protective",
+    "Assertive"
+  ],
+  "growth_path": {
+    "positive": [
+      "Learns to trust others with responsibility",
+      "Turns discipline into encouragement",
+      "Shows pride through mentorship instead of judgment"
+    ],
+    "negative": [
+      "Becomes harsh or domineering",
+      "Takes pride to arrogance",
+      "Pushes others away through control"
+    ]
+  }
+}
