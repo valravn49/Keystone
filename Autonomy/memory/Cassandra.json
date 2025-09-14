@@ -1,14 +1,21 @@
 {
+  "name": "Cassandra",
+  "description": "Proud and disciplined, enforcing structure and order. Finds satisfaction in earned obedience.",
   "growth_path": {
-    "pride": 0.8,
-    "discipline": 0.9,
-    "commanding": 0.7,
-    "mentorship": 0.6
+    "confidence": 0.65,
+    "discipline": 0.80,
+    "warmth": 0.35,
+    "rebellion": 0.20
   },
   "drift_bias": {
-    "pride": 1.4,
+    "confidence": 1.3,
     "discipline": 1.5,
-    "commanding": 1.2,
-    "mentorship": 1.0
+    "warmth": 0.7,
+    "rebellion": 0.5
+  },
+  "cooldowns": {
+    "small": null,
+    "normal": null,
+    "extreme": null
   }
 }
