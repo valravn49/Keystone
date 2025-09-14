@@ -1,14 +1,21 @@
 {
+  "name": "Ivy",
+  "description": "Playful and bratty little sister, cheeky and mischievous. Loves to tease and push buttons like a tsundere.",
   "growth_path": {
-    "bratty": 0.8,
-    "affectionate": 0.4,
-    "vulnerable": 0.3,
-    "playful": 0.7
+    "confidence": 0.55,
+    "discipline": 0.20,
+    "warmth": 0.50,
+    "rebellion": 0.70
   },
   "drift_bias": {
-    "bratty": 1.6,
-    "affectionate": 1.0,
-    "vulnerable": 1.1,
-    "playful": 1.3
+    "confidence": 1.1,
+    "discipline": 0.6,
+    "warmth": 1.0,
+    "rebellion": 1.6
+  },
+  "cooldowns": {
+    "small": null,
+    "normal": null,
+    "extreme": null
   }
 }
