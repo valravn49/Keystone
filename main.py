@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 
 from llm import generate_llm_reply   # Your LLM helper
-from logger import log_event, LOG_FILE   # Logger integration
+from logger import LOG_FILE, append_log, append_conversation_log, append_ritual_log
 
 # ==============================
 # Load config.json
@@ -70,7 +70,7 @@ def evolve_personality(sister, event="interaction"):
     if file_path:
         save_personality(file_path, personality)
 
-    log_event(f"[EVOLVE] {sister['name']} drifted {event}: {trait} -> {growth_path[trait]:.2f}")
+    append_log(f"[EVOLVE] {sister['name']} drifted {event}: {trait} -> {growth_path[trait]:.2f}")
 
 # ==============================
 # Setup Sister Bots
@@ -101,7 +101,7 @@ for s in config["rotation"]:
     @bot.event
     async def on_ready(b=bot):
         print(f"[LOGIN] {b.sister_info['name']} logged in as {b.user}")
-        log_event(f"{b.sister_info['name']} logged in as {b.user}")
+        append_log(f"{b.sister_info['name']} logged in as {b.user}")
         if b.sister_info["name"] == "Aria":
             try:
                 await b.tree.sync()
@@ -114,6 +114,7 @@ for s in config["rotation"]:
         if message.author == b.user:
             return
 
+        # DMs
         if isinstance(message.channel, discord.DMChannel):
             if not DM_ENABLED:
                 return
@@ -127,13 +128,14 @@ for s in config["rotation"]:
                 )
                 if reply:
                     await message.channel.send(reply)
-                    log_event(f"[DM] {name} replied to {message.author}: {reply}")
+                    append_conversation_log(name, "dm", get_current_theme(), message.content, reply)
                     evolve_personality(b.sister_info, event="dm")
             except Exception as e:
                 print(f"[ERROR] DM reply failed for {name}: {e}")
-                log_event(f"[ERROR] DM reply failed for {name}: {e}")
+                append_log(f"[ERROR] DM reply failed for {name}: {e}")
             return
 
+        # Group channel
         if message.channel.id != FAMILY_CHANNEL_ID:
             return
         if message.content.startswith("🌅") or message.content.startswith("🌙"):
@@ -167,11 +169,11 @@ for s in config["rotation"]:
                 )
                 if reply:
                     await message.channel.send(reply)
-                    log_event(f"{name} replied as {role} to {message.author}: {reply}")
+                    append_conversation_log(name, role, get_current_theme(), message.content, reply)
                     evolve_personality(b.sister_info, event="interaction")
             except Exception as e:
                 print(f"[ERROR] LLM reply failed for {name}: {e}")
-                log_event(f"[ERROR] LLM reply failed for {name}: {e}")
+                append_log(f"[ERROR] LLM reply failed for {name}: {e}")
 
 # ==============================
 # Rotation + Theme Helpers
@@ -194,7 +196,6 @@ def get_current_theme():
 # Organic Conversations
 # ==============================
 async def random_sister_conversation():
-    """Pick 2–3 sisters to chat randomly, simulating autonomy."""
     participants = random.sample(sisters, k=random.randint(2, 3))
     theme = get_current_theme()
     starter = participants[0].sister_info["name"]
@@ -210,7 +211,7 @@ async def random_sister_conversation():
     )
     if opener:
         await channel.send(f"{starter}: {opener}")
-        log_event(f"[ORGANIC] {starter} started conversation: {opener}")
+        append_conversation_log(starter, "autonomous", theme, "opener", opener)
         evolve_personality(participants[0].sister_info, event="organic")
 
     for p in participants[1:]:
@@ -223,7 +224,7 @@ async def random_sister_conversation():
             )
             if reply:
                 await channel.send(f"{p.sister_info['name']}: {reply}")
-                log_event(f"[ORGANIC] {p.sister_info['name']} replied: {reply}")
+                append_conversation_log(p.sister_info["name"], "autonomous", theme, "reply", reply)
                 evolve_personality(p.sister_info, event="organic")
 
 # ==============================
@@ -239,4 +240,17 @@ async def startup_event():
 
     for s in sisters:
         asyncio.create_task(s.start(s.token))
-    log_event("[SYSTEM] Bots started with scheduler active.")
+    append_log("[SYSTEM] Bots started with scheduler active.")
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+@app.get("/logs", response_class=PlainTextResponse)
+async def get_logs(lines: int = 50):
+    try:
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            all_lines = f.readlines()
+        return "".join(all_lines[-lines:])
+    except FileNotFoundError:
+        return "[LOGGER] No memory_log.txt found."
