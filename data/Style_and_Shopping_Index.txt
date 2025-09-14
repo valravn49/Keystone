@@ -1,0 +1,119 @@
+=== Style & Shopping Index (AuDHD-Tailored) ===
+Merged from makeup_wishlist, clothing_shopping_list, clothing_shopping_guide, shaving_maintenance.
+Rebuilt on 2025-09-04 01:06 by request.
+
+=== Baseline Essentials (Always Active) ===
+Makeup (Purchased ✅ / Pending ☐):
+✅ Foundation – Maybelline Fit Me Matte + Poreless
+✅ Concealer – L'Oréal True Match
+✅ Eyeliner – Maybelline Hyper Sharp Wing (Black)
+✅ Mascara – Maybelline Great Lash
+✅ Brow Pencil – Rimmel (Dark Brown)
+
+Clothing (Purchased ✅ / Pending ☐):
+- Undergarments:
+  ☐ Panty sets (neutral + fem styles)
+  ☐ Bras (2–3 daily wear, 1 statement)
+  ☐ Thigh-highs / stockings (basic + patterned)
+- Work-safe fem:
+  ☐ Hoodie (lime green / dark green split)
+  ☐ Black work pants
+  ☐ Steel toe boots (already owned)
+- Casual basics:
+  ☐ Soft lounge shorts
+  ☐ Neutral tops (2–3)
+  ☐ Hoodie / cardigan
+
+Shaving:
+- Daily: Clean area, use foam cleanser, shave with sharp razor.
+- Aftercare: Moisturiser or soothing balm.
+- Weekly: Full body check for irritation, replace razor if dull.
+
+=== Novelty Layer (Variable / Optional) ===
+Makeup Extras:
+☐ Eyeshadow palette (pastel / goth tones)
+☐ Lip gloss (clear + tinted)
+☐ Highlighter (subtle shimmer)
+☐ Setting spray (long-wear)
+
+Clothing Extras:
+☐ Statement dress (public risk theme)
+☐ Skirt (casual fem, public layering)
+☐ Bodysuits (layering base)
+☐ Accessories (necklace, rings, chokers)
+
+Shaving / Grooming Extras:
+☐ Scented lotions (vanilla, rose, lavender)
+☐ Exfoliating scrub (weekly use)
+☐ Waxing trial (optional, salon-based)
+
+=== Outfit Guide ===
+Baseline Outfits (safe / reliable):
+- Casual at Home: lounge shorts + soft top + cardigan.
+- Work-safe fem: split hoodie + black pants + boots.
+- Skincare focus: clean face, light brows + mascara.
+
+Novelty Outfits (weekly themes):
+- Subtle Femme but Masc: urban backdrop, bold lines, neutral hoodie + accessories.
+- Boyfriend Looks: lace top + soft shorts, dreamy styling.
+- Risky Public: neon backdrop, short skirt + statement accessory.
+- Custom Mistress Look: dramatic spotlight, chosen by Mistress.
+
+=== Progress Markers ===
+- Makeup: 5/5 baseline items purchased ✅
+- Clothing: in progress (undergarments pending, boots already owned)
+- Shaving: baseline routine defined, extras optional
+
+=== Notes ===
+This file merges style + shopping into one framework.
+Purchased items remain ✅, pending items ☐.
+Baseline = always active, Novelty = optional for dopamine + variety.
+
+
+=== Makeup Routine Guides (Added 2025-09-05) ===
+
+Subtle Routine (Soft + Discreet)
+1. Foundation (brush): Dot small amounts onto cheeks, forehead, chin. Blend outward in circular motions with a fluffy foundation brush. Keep it light, don’t overwork.
+2. Concealer: Use fingertip or a small brush. Tap gently under eyes and on any blemishes. Blend until seamless.
+3. Brows: With your pencil, sketch tiny strokes to fill gaps. Brush through with spoolie to soften.
+4. Eyeliner: Thin line right at the upper lashes. Keep it soft, almost invisible.
+5. Mascara: One coat on top lashes only. Wiggle brush at the base, sweep upward.
+6. Finish: Balm on lips. Light pat of powder if needed.
+
+Bold Routine (Work-safe but Stronger)
+1. Foundation (brush): Apply a slightly more even layer all over the face, blending outward. Buff until smooth.
+2. Concealer: Brighten under-eyes (triangle shape under each eye), and lightly prime eyelids. Tap to blend.
+3. Brows: Define shape with pencil, extend tails slightly, arch a bit sharper. Blend with spoolie.
+4. Eyeliner: Start thin, gradually thicken toward the outer corner. Add a soft flick upward.
+5. Mascara: Two coats on top lashes, one light coat on bottom. Let the first coat dry before the second.
+6. Finish: Balm or lightly tinted balm. Optional gloss if you want more shine.
+
+Brush Tip: Keep strokes light and circular; if you press too hard, it leaves streaks. A final gentle buff over the whole face with your brush will melt the foundation into your skin for a natural finish.
+
+
+=== Makeup Brush Care Guide (Added 2025-09-05) ===
+
+Daily (Quick Clean):
+- After each use, wipe brush gently on a clean tissue to remove excess product.
+- Spray with a brush cleaner or use a damp microfiber cloth if available.
+
+Weekly (Deep Clean):
+1. Wet brush bristles under lukewarm water (keep ferrule/handle dry to prevent loosening).
+2. Add a drop of gentle shampoo or liquid soap to your palm.
+3. Swirl bristles in the soap, lathering until product residue lifts.
+4. Rinse thoroughly until water runs clear.
+5. Gently squeeze out excess water with a clean towel.
+6. Reshape bristles and lay flat on a towel to dry overnight (never upright, water can seep into the handle).
+
+Tips:
+- Never soak brushes fully in water (weakens glue in ferrule).
+- Clean foundation/concealer brushes more often (every 2–3 days) to prevent build-up.
+- Store brushes upright in a cup or holder once dry, away from dust and humidity.
+
+
+=== Brush Cleaning Guide (Added 2025-09-05) ===
+- Daily: Wipe foundation brush on a clean tissue after use to remove excess product.
+- Weekly: Wash brush with gentle shampoo or brush cleaner. Work cleanser into bristles, rinse until water runs clear.
+- Drying: Gently squeeze out water with a towel, reshape bristles, and lay flat to dry (never upright, to avoid water in the handle).
+- Replacement: Replace foundation brush every 6–12 months if bristles fray or shed.
+
