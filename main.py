@@ -20,7 +20,7 @@ with open("config.json", "r") as f:
 
 FAMILY_CHANNEL_ID = config["family_group_channel"]
 THEMES = config["themes"]
-DM_SLASH_OUTPUT = config.get("dm_slash_output", True)
+DM_SLASH_OUTPUT = config.get("dm_slash_output", False)
 
 # Tracks state in memory
 state = {
@@ -159,68 +159,108 @@ async def archive_log():
         log_event(f"[LOGGER ERROR] Failed to archive log: {e}")
 
 # ==============================
-# Scheduled Messages (LLM-driven)
+# Scheduled Messages
 # ==============================
-# (your send_morning_message and send_night_message remain unchanged)
+async def send_morning_message():
+    rotation = get_today_rotation()
+    theme = get_current_theme()
+    lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
+
+    lead_msg = await generate_llm_reply(
+        sister=lead,
+        user_message="Good morning message: include roles, theme, hygiene reminders, and discipline check. Write 3–5 sentences.",
+        theme=theme,
+        role="lead"
+    )
+    await post_to_family(lead_msg, sender=lead)
+
+    for s in supports:
+        if random.random() < 0.7:
+            reply = await generate_llm_reply(
+                sister=s,
+                user_message="Short supportive morning comment, 1–2 sentences.",
+                theme=theme,
+                role="support"
+            )
+            if reply:
+                await post_to_family(reply, sender=s)
+
+    if random.random() < 0.2:
+        rest_reply = await generate_llm_reply(
+            sister=rest,
+            user_message="Quiet short morning remark, 1 sentence.",
+            theme=theme,
+            role="rest"
+        )
+        if rest_reply:
+            await post_to_family(rest_reply, sender=rest)
+
+    state["rotation_index"] += 1
+    log_event(f"[SCHEDULER] Morning message completed with {lead} as lead")
+
+async def send_night_message():
+    rotation = get_today_rotation()
+    theme = get_current_theme()
+    lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
+
+    lead_msg = await generate_llm_reply(
+        sister=lead,
+        user_message="Good night message: thank supporters, wish rest, ask reflection, remind about outfits, wake-up discipline, and plug/service tasks. Write 3–5 sentences.",
+        theme=theme,
+        role="lead"
+    )
+    await post_to_family(lead_msg, sender=lead)
+
+    for s in supports:
+        if random.random() < 0.6:
+            reply = await generate_llm_reply(
+                sister=s,
+                user_message="Short supportive night comment, 1–2 sentences.",
+                theme=theme,
+                role="support"
+            )
+            if reply:
+                await post_to_family(reply, sender=s)
+
+    if random.random() < 0.15:
+        rest_reply = await generate_llm_reply(
+            sister=rest,
+            user_message="Brief quiet night remark, 1 sentence.",
+            theme=theme,
+            role="rest"
+        )
+        if rest_reply:
+            await post_to_family(rest_reply, sender=rest)
+
+    log_event(f"[SCHEDULER] Night message completed with {lead} as lead")
 
 # ==============================
-# Aria Slash Commands (DM-enabled)
+# Aria Slash Commands
 # ==============================
 if aria_bot:
     tree = aria_bot.tree
-
-    async def dm_and_confirm(interaction, dm_content: str, confirm: str):
-        """Helper: DM user if enabled, confirm in-channel ephemeral."""
-        if DM_SLASH_OUTPUT:
-            try:
-                await interaction.user.send(dm_content)
-                await interaction.response.send_message(confirm, ephemeral=True)
-                return
-            except discord.Forbidden:
-                await interaction.response.send_message(
-                    "❌ I couldn't DM you (are your DMs open?).", ephemeral=True
-                )
-                return
-        # fallback: send in-channel (ephemeral)
-        await interaction.response.send_message(dm_content, ephemeral=True)
 
     @tree.command(name="force-rotate", description="Manually advance sister rotation")
     async def slash_force_rotate(interaction: discord.Interaction):
         state["rotation_index"] += 1
         rotation = get_today_rotation()
         log_event(f"[SLASH] Rotation advanced via slash. New lead: {rotation['lead']}")
-        await dm_and_confirm(
-            interaction,
-            f"🔄 Rotation advanced.\nNew lead: **{rotation['lead']}**",
-            "✅ Rotation result sent to your DM."
-        )
+        await interaction.user.send(f"🔄 Rotation advanced. New lead: **{rotation['lead']}**")
 
     @tree.command(name="force-morning", description="Force the morning message")
     async def slash_force_morning(interaction: discord.Interaction):
         await send_morning_message()
-        await dm_and_confirm(
-            interaction,
-            "☀️ Morning message forced and posted.",
-            "✅ Morning confirmation sent to your DM."
-        )
+        await interaction.user.send("☀️ Morning message forced.")
 
     @tree.command(name="force-night", description="Force the night message")
     async def slash_force_night(interaction: discord.Interaction):
         await send_night_message()
-        await dm_and_confirm(
-            interaction,
-            "🌙 Night message forced and posted.",
-            "✅ Night confirmation sent to your DM."
-        )
+        await interaction.user.send("🌙 Night message forced.")
 
     @tree.command(name="force-archive", description="Force log archive now")
     async def slash_force_archive(interaction: discord.Interaction):
         await archive_log()
-        await dm_and_confirm(
-            interaction,
-            "🗄️ Log archive forced and rotated.",
-            "✅ Archive result sent to your DM."
-        )
+        await interaction.user.send("🗄️ Log archive forced.")
 
     @tree.command(name="logs", description="Fetch last 20 lines of memory log")
     async def slash_logs(interaction: discord.Interaction, lines: int = 20):
@@ -230,12 +270,7 @@ if aria_bot:
             excerpt = "".join(all_lines[-lines:])
         except FileNotFoundError:
             excerpt = "[LOGGER] No memory_log.txt found."
-
-        await dm_and_confirm(
-            interaction,
-            f"Here are the last {lines} log lines:\n```{excerpt}```",
-            "✅ Logs sent to your DM."
-        )
+        await interaction.user.send(f"```{excerpt}```")
 
 # ==============================
 # FastAPI app + startup
@@ -253,3 +288,59 @@ async def startup_event():
     for s in sisters:
         asyncio.create_task(s.start(s.token))
     log_event("[SYSTEM] Bots started with scheduler active.")
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+@app.get("/status")
+async def status():
+    rotation = get_today_rotation()
+    theme = get_current_theme()
+    return {
+        "bots": [s.sister_info["name"] for s in sisters],
+        "ready": [s.sister_info["name"] for s in sisters if s.is_ready()],
+        "rotation": rotation,
+        "theme": theme,
+    }
+
+@app.get("/logs", response_class=PlainTextResponse)
+async def get_logs(lines: int = 50):
+    if DM_SLASH_OUTPUT:
+        return "[LOGGER] Logs are DM-only. Use Aria's /logs slash command."
+    try:
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            all_lines = f.readlines()
+        return "".join(all_lines[-lines:])
+    except FileNotFoundError:
+        return "[LOGGER] No memory_log.txt found."
+
+@app.post("/force-rotate")
+async def force_rotate():
+    if DM_SLASH_OUTPUT:
+        return {"status": "DM-only. Use Aria's /force-rotate slash command."}
+    state["rotation_index"] += 1
+    rotation = get_today_rotation()
+    log_event(f"Rotation manually advanced. New lead: {rotation['lead']}")
+    return {"status": "rotation advanced", "new_lead": rotation["lead"]}
+
+@app.post("/force-morning")
+async def force_morning():
+    if DM_SLASH_OUTPUT:
+        return {"status": "DM-only. Use Aria's /force-morning slash command."}
+    await send_morning_message()
+    return {"status": "morning message forced"}
+
+@app.post("/force-night")
+async def force_night():
+    if DM_SLASH_OUTPUT:
+        return {"status": "DM-only. Use Aria's /force-night slash command."}
+    await send_night_message()
+    return {"status": "night message forced"}
+
+@app.post("/force-archive")
+async def force_archive():
+    if DM_SLASH_OUTPUT:
+        return {"status": "DM-only. Use Aria's /force-archive slash command."}
+    await archive_log()
+    return {"status": "log archive forced"}
