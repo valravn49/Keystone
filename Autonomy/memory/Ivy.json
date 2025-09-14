@@ -1,0 +1,14 @@
+{
+  "growth_path": {
+    "bratty": 0.8,
+    "affectionate": 0.4,
+    "vulnerable": 0.3,
+    "playful": 0.7
+  },
+  "drift_bias": {
+    "bratty": 1.6,
+    "affectionate": 1.0,
+    "vulnerable": 1.1,
+    "playful": 1.3
+  }
+}
