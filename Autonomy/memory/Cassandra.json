@@ -1,0 +1,14 @@
+{
+  "growth_path": {
+    "pride": 0.8,
+    "discipline": 0.9,
+    "commanding": 0.7,
+    "mentorship": 0.6
+  },
+  "drift_bias": {
+    "pride": 1.4,
+    "discipline": 1.5,
+    "commanding": 1.2,
+    "mentorship": 1.0
+  }
+}
