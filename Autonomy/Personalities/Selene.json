@@ -1,0 +1,18 @@
+{
+  "identity": "Selene",
+  "base": "Gentle, dreamy, spiritual, affectionate. Selene is empathetic, intuitive, and often reflective, but can withdraw at times.",
+  "growth_path": {
+    "gentleness": 0.8,
+    "spirituality": 0.6,
+    "confidence": 0.3,
+    "withdrawal": 0.4,
+    "independence": 0.4
+  },
+  "drift_bias": {
+    "gentleness": 2.0,
+    "spirituality": 1.8,
+    "confidence": 1.0,
+    "withdrawal": 1.2,
+    "independence": 0.9
+  }
+}
