@@ -1,18 +1,19 @@
 import os
 import asyncio
+import json
 from openai import OpenAI
 
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ==============================
-# Personality Descriptions
+# Base Personalities
 # ==============================
-PERSONALITIES = {
-    "Aria": "Calm, orderly, nurturing. Aria is warm and stabilizing, but she sometimes teases lightly when she feels safe. She reflects on responsibility and structure, but balances it with curiosity.",
-    "Selene": "Gentle, dreamy, caring. Selene leans spiritual and whimsical, but she grounds herself with personal anecdotes and gentle questions. She’s nurturing, but also curious about others’ thoughts.",
-    "Cassandra": "Strict, commanding, proud. Cassandra values order and obedience, but occasionally reveals warmth when loyalty or effort is shown. Her discipline defines her, but she sometimes shows cracks of softness.",
-    "Ivy": "Playful, teasing, bratty tsundere. Ivy mocks and teases to cover her feelings, acting like she doesn’t care — but secretly craves attention and affection. She often flips from sharp teasing to sudden vulnerability."
+BASE_PERSONALITIES = {
+    "Aria": "Calm, orderly, nurturing. Aria is warm and stabilizing, but sometimes teases lightly when she feels safe.",
+    "Selene": "Gentle, dreamy, caring. Selene leans spiritual and whimsical, grounding herself with personal anecdotes and gentle questions.",
+    "Cassandra": "Strict, commanding, proud. Cassandra values order and obedience, but occasionally reveals warmth when loyalty is shown.",
+    "Ivy": "Playful, teasing, bratty tsundere. Ivy mocks and teases to cover her feelings, flipping from sharp to vulnerable quickly."
 }
 
 # ==============================
@@ -27,24 +28,42 @@ ROLE_STYLES = {
 }
 
 # ==============================
+# Helper: Load Drift Personality
+# ==============================
+def load_dynamic_personality(sister: str):
+    """Load evolving personality JSON for a sister."""
+    file_path = f"autonomy/memory/{sister}.json"
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data
+    except FileNotFoundError:
+        return {}
+
+def merge_personality(sister: str):
+    """Merge base description with current drift state."""
+    base = BASE_PERSONALITIES.get(sister, "Unique and distinct personality.")
+    dynamic = load_dynamic_personality(sister)
+
+    drift_notes = []
+    growth_path = dynamic.get("growth_path", {})
+    for trait, value in growth_path.items():
+        if value > 0.7:
+            drift_notes.append(f"{sister} leans strongly toward {trait} lately ({value:.2f}).")
+        elif value < 0.3:
+            drift_notes.append(f"{sister} avoids {trait} recently ({value:.2f}).")
+
+    drift_text = " ".join(drift_notes) if drift_notes else ""
+    return f"{base} {drift_text}".strip()
+
+# ==============================
 # Generate Reply
 # ==============================
 async def generate_llm_reply(sister: str, user_message: str, theme: str, role: str):
     """
-    Generate an in-character reply for a sister.
+    Generate an in-character reply for a sister, influenced by her evolving personality state.
     """
-    personality = PERSONALITIES.get(sister, "Unique and distinct personality.")
-
-    # Style nudges for organic depth
-    if sister == "Selene":
-        personality += " Selene should mix her dreamy nature with personal anecdotes and gentle questions."
-    elif sister == "Aria":
-        personality += " Aria should be steady and nurturing, but sometimes tease lightly or reflect with curiosity."
-    elif sister == "Cassandra":
-        personality += " Cassandra should balance strictness with rare but impactful warmth, showing cracks in her discipline occasionally."
-    elif sister == "Ivy":
-        personality += " Ivy should lean bratty and tsundere — teasing, mocking, pretending not to care, then softening suddenly with affection or vulnerability."
-
+    personality = merge_personality(sister)
     role_style = ROLE_STYLES.get(role, "Reply naturally in character.")
 
     prompt = f"""
@@ -57,7 +76,8 @@ Your role today: {role} → {role_style}
 Context / message to reply to:
 \"{user_message}\"
 
-Respond in character as {sister}. Stay concise and natural. Do not write as narration, only as {sister}'s spoken message.
+Respond in character as {sister}. Stay concise and natural. 
+Do not write narration — only {sister}'s spoken message.
 """
 
     try:
@@ -67,7 +87,7 @@ Respond in character as {sister}. Stay concise and natural. Do not write as narr
             lambda: client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "system", "content": prompt}],
-                max_tokens=120,
+                max_tokens=150,
                 temperature=0.9,
             )
         )
