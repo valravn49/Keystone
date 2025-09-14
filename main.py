@@ -20,7 +20,7 @@ with open("config.json", "r") as f:
 
 FAMILY_CHANNEL_ID = config["family_group_channel"]
 THEMES = config["themes"]
-DM_SLASH_OUTPUT = config.get("dm_slash_output", False)
+DM_ENABLED = config.get("dm_enabled", True)
 
 # Tracks state in memory
 state = {
@@ -30,10 +30,53 @@ state = {
 }
 
 # ==============================
+# Personality Helpers
+# ==============================
+def load_personality(file_path):
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+def save_personality(file_path, data):
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+def evolve_personality(sister, event="interaction"):
+    """Mutate a sister's personality with bias weighting and persist it."""
+    personality = sister.get("personality", {})
+    growth_path = personality.get("growth_path", {})
+    bias = personality.get("drift_bias", {})
+
+    if not growth_path:
+        return
+
+    traits = list(growth_path.keys())
+    weights = [bias.get(t, 1.0) for t in traits]
+    trait = random.choices(traits, weights=weights, k=1)[0]
+
+    base_change = random.uniform(-0.08, 0.08)
+    if sister["name"] == "Ivy":
+        base_change *= 1.5
+    elif sister["name"] == "Aria":
+        base_change *= 0.5
+
+    growth_path[trait] = min(1.0, max(0.0, growth_path[trait] + base_change))
+    personality["growth_path"] = growth_path
+
+    file_path = sister.get("personality_file")
+    if file_path:
+        save_personality(file_path, personality)
+
+    log_event(f"[EVOLVE] {sister['name']} drifted {event}: {trait} -> {growth_path[trait]:.2f}")
+
+# ==============================
 # Setup Sister Bots
 # ==============================
 sisters = []
-aria_bot = None   # keep handle for slash commands
+aria_bot = None
 
 for s in config["rotation"]:
     token = os.getenv(s["env_var"])
@@ -44,13 +87,16 @@ for s in config["rotation"]:
     intents = discord.Intents.default()
     intents.messages = True
     intents.guilds = True
+    intents.dm_messages = True
     bot = commands.Bot(command_prefix="!", intents=intents)
     bot.sister_info = s
     bot.token = token
+    bot.sister_info["personality_file"] = f"personalities/{s['name'].lower()}.json"
+    bot.sister_info["personality"] = load_personality(bot.sister_info["personality_file"])
     sisters.append(bot)
 
     if s["name"] == "Aria":
-        aria_bot = bot   # mark Aria for slash commands
+        aria_bot = bot
 
     @bot.event
     async def on_ready(b=bot):
@@ -67,6 +113,27 @@ for s in config["rotation"]:
     async def on_message(message, b=bot):
         if message.author == b.user:
             return
+
+        if isinstance(message.channel, discord.DMChannel):
+            if not DM_ENABLED:
+                return
+            name = b.sister_info["name"]
+            try:
+                reply = await generate_llm_reply(
+                    sister=name,
+                    user_message=message.content,
+                    theme=get_current_theme(),
+                    role="dm"
+                )
+                if reply:
+                    await message.channel.send(reply)
+                    log_event(f"[DM] {name} replied to {message.author}: {reply}")
+                    evolve_personality(b.sister_info, event="dm")
+            except Exception as e:
+                print(f"[ERROR] DM reply failed for {name}: {e}")
+                log_event(f"[ERROR] DM reply failed for {name}: {e}")
+            return
+
         if message.channel.id != FAMILY_CHANNEL_ID:
             return
         if message.content.startswith("🌅") or message.content.startswith("🌙"):
@@ -74,7 +141,6 @@ for s in config["rotation"]:
 
         name = b.sister_info["name"]
         rotation = get_today_rotation()
-
         role = None
         should_reply = False
         if name == rotation["lead"]:
@@ -102,6 +168,7 @@ for s in config["rotation"]:
                 if reply:
                     await message.channel.send(reply)
                     log_event(f"{name} replied as {role} to {message.author}: {reply}")
+                    evolve_personality(b.sister_info, event="interaction")
             except Exception as e:
                 print(f"[ERROR] LLM reply failed for {name}: {e}")
                 log_event(f"[ERROR] LLM reply failed for {name}: {e}")
@@ -123,224 +190,53 @@ def get_current_theme():
         state["last_theme_update"] = today
     return THEMES[state["theme_index"]]
 
-async def post_to_family(message: str, sender=None):
-    for bot in sisters:
-        if bot.is_ready():
-            if not sender or bot.sister_info["name"] == sender:
-                try:
-                    channel = bot.get_channel(FAMILY_CHANNEL_ID)
-                    if channel:
-                        await channel.send(message)
-                        log_event(f"{bot.sister_info['name']} posted: {message}")
-                    else:
-                        print(f"[ERROR] Channel {FAMILY_CHANNEL_ID} not found for {bot.sister_info['name']}")
-                except Exception as e:
-                    print(f"[ERROR] Failed to send with {bot.sister_info['name']}: {e}")
-                    log_event(f"[ERROR] Failed to send with {bot.sister_info['name']}: {e}")
-                break
-
 # ==============================
-# Log Archiving
+# Organic Conversations
 # ==============================
-async def archive_log():
-    today = datetime.now().strftime("%Y-%m-%d")
-    archive_dir = "logs"
-    os.makedirs(archive_dir, exist_ok=True)
-    archive_path = os.path.join(archive_dir, f"memory_log-{today}.txt")
-    try:
-        if os.path.exists(LOG_FILE):
-            os.rename(LOG_FILE, archive_path)
-            print(f"[LOGGER] Archived log -> {archive_path}")
-            with open(LOG_FILE, "w", encoding="utf-8") as f:
-                f.write(f"[SYSTEM] Log reset at midnight {today}\n")
-            log_event(f"[SYSTEM] Log archived to {archive_path}")
-    except Exception as e:
-        print(f"[LOGGER ERROR] Failed to archive log: {e}")
-        log_event(f"[LOGGER ERROR] Failed to archive log: {e}")
-
-# ==============================
-# Scheduled Messages
-# ==============================
-async def send_morning_message():
-    rotation = get_today_rotation()
+async def random_sister_conversation():
+    """Pick 2–3 sisters to chat randomly, simulating autonomy."""
+    participants = random.sample(sisters, k=random.randint(2, 3))
     theme = get_current_theme()
-    lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
+    starter = participants[0].sister_info["name"]
+    channel = participants[0].get_channel(FAMILY_CHANNEL_ID)
+    if not channel:
+        return
 
-    lead_msg = await generate_llm_reply(
-        sister=lead,
-        user_message="Good morning message: include roles, theme, hygiene reminders, and discipline check. Write 3–5 sentences.",
+    opener = await generate_llm_reply(
+        sister=starter,
+        user_message="Start a casual chat about leisure, personal interests, or beliefs.",
         theme=theme,
-        role="lead"
+        role="autonomous"
     )
-    await post_to_family(lead_msg, sender=lead)
+    if opener:
+        await channel.send(f"{starter}: {opener}")
+        log_event(f"[ORGANIC] {starter} started conversation: {opener}")
+        evolve_personality(participants[0].sister_info, event="organic")
 
-    for s in supports:
-        if random.random() < 0.7:
+    for p in participants[1:]:
+        if random.random() < 0.8:
             reply = await generate_llm_reply(
-                sister=s,
-                user_message="Short supportive morning comment, 1–2 sentences.",
+                sister=p.sister_info["name"],
+                user_message=f"Respond to {starter}'s opener with your own thoughts.",
                 theme=theme,
-                role="support"
+                role="autonomous"
             )
             if reply:
-                await post_to_family(reply, sender=s)
-
-    if random.random() < 0.2:
-        rest_reply = await generate_llm_reply(
-            sister=rest,
-            user_message="Quiet short morning remark, 1 sentence.",
-            theme=theme,
-            role="rest"
-        )
-        if rest_reply:
-            await post_to_family(rest_reply, sender=rest)
-
-    state["rotation_index"] += 1
-    log_event(f"[SCHEDULER] Morning message completed with {lead} as lead")
-
-async def send_night_message():
-    rotation = get_today_rotation()
-    theme = get_current_theme()
-    lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
-
-    lead_msg = await generate_llm_reply(
-        sister=lead,
-        user_message="Good night message: thank supporters, wish rest, ask reflection, remind about outfits, wake-up discipline, and plug/service tasks. Write 3–5 sentences.",
-        theme=theme,
-        role="lead"
-    )
-    await post_to_family(lead_msg, sender=lead)
-
-    for s in supports:
-        if random.random() < 0.6:
-            reply = await generate_llm_reply(
-                sister=s,
-                user_message="Short supportive night comment, 1–2 sentences.",
-                theme=theme,
-                role="support"
-            )
-            if reply:
-                await post_to_family(reply, sender=s)
-
-    if random.random() < 0.15:
-        rest_reply = await generate_llm_reply(
-            sister=rest,
-            user_message="Brief quiet night remark, 1 sentence.",
-            theme=theme,
-            role="rest"
-        )
-        if rest_reply:
-            await post_to_family(rest_reply, sender=rest)
-
-    log_event(f"[SCHEDULER] Night message completed with {lead} as lead")
+                await channel.send(f"{p.sister_info['name']}: {reply}")
+                log_event(f"[ORGANIC] {p.sister_info['name']} replied: {reply}")
+                evolve_personality(p.sister_info, event="organic")
 
 # ==============================
-# Aria Slash Commands
-# ==============================
-if aria_bot:
-    tree = aria_bot.tree
-
-    @tree.command(name="force-rotate", description="Manually advance sister rotation")
-    async def slash_force_rotate(interaction: discord.Interaction):
-        state["rotation_index"] += 1
-        rotation = get_today_rotation()
-        log_event(f"[SLASH] Rotation advanced via slash. New lead: {rotation['lead']}")
-        await interaction.user.send(f"🔄 Rotation advanced. New lead: **{rotation['lead']}**")
-
-    @tree.command(name="force-morning", description="Force the morning message")
-    async def slash_force_morning(interaction: discord.Interaction):
-        await send_morning_message()
-        await interaction.user.send("☀️ Morning message forced.")
-
-    @tree.command(name="force-night", description="Force the night message")
-    async def slash_force_night(interaction: discord.Interaction):
-        await send_night_message()
-        await interaction.user.send("🌙 Night message forced.")
-
-    @tree.command(name="force-archive", description="Force log archive now")
-    async def slash_force_archive(interaction: discord.Interaction):
-        await archive_log()
-        await interaction.user.send("🗄️ Log archive forced.")
-
-    @tree.command(name="logs", description="Fetch last 20 lines of memory log")
-    async def slash_logs(interaction: discord.Interaction, lines: int = 20):
-        try:
-            with open(LOG_FILE, "r", encoding="utf-8") as f:
-                all_lines = f.readlines()
-            excerpt = "".join(all_lines[-lines:])
-        except FileNotFoundError:
-            excerpt = "[LOGGER] No memory_log.txt found."
-        await interaction.user.send(f"```{excerpt}```")
-
-# ==============================
-# FastAPI app + startup
+# FastAPI App
 # ==============================
 app = FastAPI()
 
 @app.on_event("startup")
 async def startup_event():
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(send_morning_message, "cron", hour=6, minute=0)
-    scheduler.add_job(send_night_message, "cron", hour=22, minute=0)
-    scheduler.add_job(archive_log, "cron", hour=0, minute=0)
+    scheduler.add_job(random_sister_conversation, "interval", minutes=random.randint(30, 90))
     scheduler.start()
 
     for s in sisters:
         asyncio.create_task(s.start(s.token))
     log_event("[SYSTEM] Bots started with scheduler active.")
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-@app.get("/status")
-async def status():
-    rotation = get_today_rotation()
-    theme = get_current_theme()
-    return {
-        "bots": [s.sister_info["name"] for s in sisters],
-        "ready": [s.sister_info["name"] for s in sisters if s.is_ready()],
-        "rotation": rotation,
-        "theme": theme,
-    }
-
-@app.get("/logs", response_class=PlainTextResponse)
-async def get_logs(lines: int = 50):
-    if DM_SLASH_OUTPUT:
-        return "[LOGGER] Logs are DM-only. Use Aria's /logs slash command."
-    try:
-        with open(LOG_FILE, "r", encoding="utf-8") as f:
-            all_lines = f.readlines()
-        return "".join(all_lines[-lines:])
-    except FileNotFoundError:
-        return "[LOGGER] No memory_log.txt found."
-
-@app.post("/force-rotate")
-async def force_rotate():
-    if DM_SLASH_OUTPUT:
-        return {"status": "DM-only. Use Aria's /force-rotate slash command."}
-    state["rotation_index"] += 1
-    rotation = get_today_rotation()
-    log_event(f"Rotation manually advanced. New lead: {rotation['lead']}")
-    return {"status": "rotation advanced", "new_lead": rotation["lead"]}
-
-@app.post("/force-morning")
-async def force_morning():
-    if DM_SLASH_OUTPUT:
-        return {"status": "DM-only. Use Aria's /force-morning slash command."}
-    await send_morning_message()
-    return {"status": "morning message forced"}
-
-@app.post("/force-night")
-async def force_night():
-    if DM_SLASH_OUTPUT:
-        return {"status": "DM-only. Use Aria's /force-night slash command."}
-    await send_night_message()
-    return {"status": "night message forced"}
-
-@app.post("/force-archive")
-async def force_archive():
-    if DM_SLASH_OUTPUT:
-        return {"status": "DM-only. Use Aria's /force-archive slash command."}
-    await archive_log()
-    return {"status": "log archive forced"}
