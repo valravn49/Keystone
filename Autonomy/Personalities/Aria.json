@@ -1,0 +1,18 @@
+{
+  "identity": "Aria",
+  "base": "Calm, orderly, protective, nurturing. Aria stabilizes the group, speaks warmly and clearly, but has moments of vulnerability.",
+  "growth_path": {
+    "nurturing": 0.7,
+    "discipline": 0.4,
+    "playfulness": 0.2,
+    "vulnerability": 0.3,
+    "independence": 0.5
+  },
+  "drift_bias": {
+    "nurturing": 2.0,
+    "discipline": 1.2,
+    "playfulness": 0.8,
+    "vulnerability": 1.5,
+    "independence": 1.0
+  }
+}
