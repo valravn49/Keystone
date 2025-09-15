@@ -1,56 +1,102 @@
 import os
 import json
-import datetime
+from datetime import datetime
 
-DATA_DIR = "data"
-NUTRITION_LOG = os.path.join(DATA_DIR, "nutrition_log.jsonl")
+# ==============================
+# File Paths
+# ==============================
+NUTRITION_FILE = "data/nutrition_log.jsonl"
+TARGET_FILE = "data/nutrition_targets.json"
 
-os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs("data", exist_ok=True)
 
-
+# ==============================
+# Core Logging Functions
+# ==============================
 def log_meal(user: str, description: str, calories: int, macros: dict):
-    """
-    Append a meal entry to the nutrition log.
-    macros = {"protein": g, "fat": g, "carbs": g}
-    """
+    """Append a meal entry to the log file."""
     entry = {
-        "timestamp": datetime.datetime.utcnow().isoformat(),
+        "timestamp": datetime.utcnow().isoformat(),
         "user": user,
         "description": description,
         "calories": calories,
         "macros": macros,
     }
-    with open(NUTRITION_LOG, "a", encoding="utf-8") as f:
+    with open(NUTRITION_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
     return entry
 
+def read_meals():
+    """Return all logged meals as a list of dicts."""
+    if not os.path.exists(NUTRITION_FILE):
+        return []
+    with open(NUTRITION_FILE, "r", encoding="utf-8") as f:
+        return [json.loads(line) for line in f]
 
-def summarize_daily_calories(user: str, date: str = None):
-    """
-    Summarize total calories and macros for a given user on a date.
-    Default = today (UTC).
-    """
-    if not os.path.exists(NUTRITION_LOG):
-        return {"calories": 0, "macros": {}, "count": 0}
+def delete_last_meal(user: str):
+    """Delete the last logged meal for a given user."""
+    meals = read_meals()
+    filtered = []
+    removed = False
+    for m in reversed(meals):
+        if not removed and m["user"] == user:
+            removed = True
+            continue
+        filtered.insert(0, m)
+    with open(NUTRITION_FILE, "w", encoding="utf-8") as f:
+        for m in filtered:
+            f.write(json.dumps(m) + "\n")
+    return removed
 
-    if not date:
-        date = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+def edit_last_meal(user: str, description: str = None, calories: int = None, macros: dict = None):
+    """Edit the most recent meal for a user."""
+    meals = read_meals()
+    for m in reversed(meals):
+        if m["user"] == user:
+            if description: m["description"] = description
+            if calories: m["calories"] = calories
+            if macros: m["macros"] = macros
+            break
+    with open(NUTRITION_FILE, "w", encoding="utf-8") as f:
+        for m in meals:
+            f.write(json.dumps(m) + "\n")
+    return True
 
-    total_calories = 0
-    macro_totals = {"protein": 0, "fat": 0, "carbs": 0}
-    count = 0
+# ==============================
+# Target Handling
+# ==============================
+def set_targets(user: str, maintenance: int, weightloss: int):
+    targets = {}
+    if os.path.exists(TARGET_FILE):
+        with open(TARGET_FILE, "r", encoding="utf-8") as f:
+            targets = json.load(f)
+    targets[user] = {"maintenance": maintenance, "weightloss": weightloss}
+    with open(TARGET_FILE, "w", encoding="utf-8") as f:
+        json.dump(targets, f, indent=2)
+    return targets[user]
 
-    with open(NUTRITION_LOG, "r", encoding="utf-8") as f:
-        for line in f:
-            try:
-                entry = json.loads(line)
-                ts = entry.get("timestamp", "")
-                if ts.startswith(date) and entry.get("user") == user:
-                    total_calories += entry.get("calories", 0)
-                    for k in macro_totals:
-                        macro_totals[k] += entry.get("macros", {}).get(k, 0)
-                    count += 1
-            except json.JSONDecodeError:
-                continue
+def get_targets(user: str):
+    if not os.path.exists(TARGET_FILE):
+        return None
+    with open(TARGET_FILE, "r", encoding="utf-8") as f:
+        targets = json.load(f)
+    return targets.get(user, None)
 
-    return {"calories": total_calories, "macros": macro_totals, "count": count}
+# ==============================
+# Summaries
+# ==============================
+def daily_summary(user: str):
+    """Return today's calorie intake and compare to targets."""
+    today = datetime.utcnow().date().isoformat()
+    meals = [m for m in read_meals() if m["user"] == user and m["timestamp"].startswith(today)]
+    total = sum(m["calories"] for m in meals)
+
+    targets = get_targets(user)
+    if not targets:
+        return f"Total today: {total} kcal. (No targets set)."
+
+    return (
+        f"Total today: {total} kcal | "
+        f"Maintenance target: {targets['maintenance']} kcal | "
+        f"Weightloss target: {targets['weightloss']} kcal"
+    )
