@@ -8,6 +8,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
+from collections import deque
+import time
 
 from llm import generate_llm_reply   # Your LLM helper
 from logger import (
@@ -38,11 +40,14 @@ state = {
     "theme_index": 0,
     "last_theme_update": None,
     "history": {},            # channel_id → [(author, content), ...]
-    "last_reply_time": {}     # channel_id → datetime
+    "last_reply_time": {},    # channel_id → datetime
+    "message_counts": {}      # channel_id → deque of timestamps
 }
 
-HISTORY_LIMIT = 6  # keep last 6 messages
-COOLDOWN_SECONDS = 10  # cooldown between any bot replies per channel
+HISTORY_LIMIT = 6   # keep last 6 messages
+COOLDOWN_SECONDS = 10  # cooldown between replies per channel
+MESSAGE_LIMIT = 5      # max replies
+MESSAGE_WINDOW = 60    # time window in seconds
 
 
 def add_to_history(channel_id, author, content):
@@ -144,6 +149,14 @@ for s in config["rotation"]:
         if last and (now - last).total_seconds() < COOLDOWN_SECONDS:
             return
 
+        # Quota check (per channel)
+        counts = state["message_counts"].setdefault(message.channel.id, deque())
+        now_ts = time.time()
+        while counts and now_ts - counts[0] > MESSAGE_WINDOW:
+            counts.popleft()
+        if len(counts) >= MESSAGE_LIMIT:
+            return
+
         name = b.sister_info["name"]
         add_to_history(message.channel.id, str(message.author), message.content)
         rotation = get_today_rotation()
@@ -183,8 +196,9 @@ for s in config["rotation"]:
                         user_message=message.content,
                         content=reply
                     )
-                    # update cooldown
+                    # update cooldown + quota
                     state["last_reply_time"][message.channel.id] = now
+                    counts.append(now_ts)
             except Exception as e:
                 print(f"[ERROR] LLM reply failed for {name}: {e}")
 
