@@ -33,10 +33,13 @@ state = {
     "rotation_index": 0,
     "theme_index": 0,
     "last_theme_update": None,
-    "history": {}  # channel_id → [(author, content), ...]
+    "history": {},            # channel_id → [(author, content), ...]
+    "last_reply_time": {}     # channel_id → datetime
 }
 
 HISTORY_LIMIT = 6  # keep last 6 messages
+COOLDOWN_SECONDS = 10  # cooldown between any bot replies per channel
+
 
 def add_to_history(channel_id, author, content):
     """Append a message to the rolling conversation history for a channel."""
@@ -46,6 +49,7 @@ def add_to_history(channel_id, author, content):
     # trim buffer
     if len(state["history"][channel_id]) > HISTORY_LIMIT:
         state["history"][channel_id] = state["history"][channel_id][-HISTORY_LIMIT:]
+
 
 # ==============================
 # Setup Sister Bots
@@ -121,6 +125,12 @@ for s in config["rotation"]:
         if message.content.startswith("🌅") or message.content.startswith("🌙"):
             return
 
+        # Cooldown check (per channel)
+        now = datetime.now()
+        last = state["last_reply_time"].get(message.channel.id)
+        if last and (now - last).total_seconds() < COOLDOWN_SECONDS:
+            return
+
         name = b.sister_info["name"]
         add_to_history(message.channel.id, str(message.author), message.content)
         rotation = get_today_rotation()
@@ -160,8 +170,11 @@ for s in config["rotation"]:
                         user_message=message.content,
                         content=reply
                     )
+                    # update cooldown
+                    state["last_reply_time"][message.channel.id] = now
             except Exception as e:
                 print(f"[ERROR] LLM reply failed for {name}: {e}")
+
 
 # ==============================
 # Rotation + Theme Helpers
@@ -173,12 +186,14 @@ def get_today_rotation():
     supports = [s["name"] for s in config["rotation"] if s["name"] not in [lead, rest]]
     return {"lead": lead, "rest": rest, "supports": supports}
 
+
 def get_current_theme():
     today = datetime.now().date()
     if state["last_theme_update"] is None or (today.weekday() == 0 and state["last_theme_update"] != today):
         state["theme_index"] = (state["theme_index"] + 1) % len(THEMES)
         state["last_theme_update"] = today
     return THEMES[state["theme_index"]]
+
 
 async def post_to_family(message: str, sender=None):
     for bot in sisters:
@@ -194,6 +209,7 @@ async def post_to_family(message: str, sender=None):
                 except Exception as e:
                     print(f"[ERROR] Failed to send with {bot.sister_info['name']}: {e}")
                 break
+
 
 # ==============================
 # Ritual Messages
@@ -241,6 +257,7 @@ async def send_morning_message():
     state["rotation_index"] += 1
     log_event(f"[SCHEDULER] Morning message completed with {lead} as lead")
 
+
 async def send_night_message():
     rotation = get_today_rotation()
     theme = get_current_theme()
@@ -283,6 +300,7 @@ async def send_night_message():
 
     log_event(f"[SCHEDULER] Night message completed with {lead} as lead")
 
+
 # ==============================
 # FastAPI App
 # ==============================
@@ -299,9 +317,11 @@ async def startup_event():
         asyncio.create_task(s.start(s.token))
     log_event("[SYSTEM] Bots started with scheduler active.")
 
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
 
 @app.get("/status")
 async def status():
@@ -314,6 +334,7 @@ async def status():
         "theme": theme,
     }
 
+
 @app.get("/logs", response_class=PlainTextResponse)
 async def get_logs(lines: int = 50):
     try:
@@ -323,6 +344,7 @@ async def get_logs(lines: int = 50):
     except FileNotFoundError:
         return "[LOGGER] No memory_log.txt found."
 
+
 @app.post("/force-rotate")
 async def force_rotate():
     state["rotation_index"] += 1
@@ -330,10 +352,12 @@ async def force_rotate():
     log_event(f"Rotation manually advanced. New lead: {rotation['lead']}")
     return {"status": "rotation advanced", "new_lead": rotation["lead"]}
 
+
 @app.post("/force-morning")
 async def force_morning():
     await send_morning_message()
     return {"status": "morning message forced"}
+
 
 @app.post("/force-night")
 async def force_night():
