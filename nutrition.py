@@ -111,7 +111,33 @@ def set_calorie_targets(maintenance: int, weight_loss: int):
     data["targets"]["weight_loss"] = weight_loss
     _save_data(data)
     return data["targets"]
+def get_daily_summary():
+    """Return a formatted string of today's nutrition + workouts + totals."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    path = os.path.join(DATA_DIR, f"{today}.json")
 
+    if not os.path.exists(path):
+        return "No entries for today."
+
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    foods = data.get("foods", [])
+    workouts = data.get("workouts", [])
+    targets = data.get("targets", {"maintenance": 0, "weight_loss": 0})
+
+    total_calories = sum(f["calories"] for f in foods)
+
+    food_lines = "\n".join([f"- {i}. {f['food']} ({f['calories']} kcal)" for i, f in enumerate(foods)])
+    workout_lines = "\n".join([f"- {i}. {w['workout']} ({w['duration']})" for i, w in enumerate(workouts)])
+
+    return (
+        f"🍽️ Foods:\n{food_lines or 'None'}\n\n"
+        f"💪 Workouts:\n{workout_lines or 'None'}\n\n"
+        f"🔥 Total Calories: {total_calories}\n"
+        f"🎯 Targets → Maintenance: {targets['maintenance']} kcal, "
+        f"Weight Loss: {targets['weight_loss']} kcal"
+    )
 def get_calorie_targets():
     """Return current calorie targets."""
     data = _load_data()
