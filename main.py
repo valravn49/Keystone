@@ -25,75 +25,35 @@ with open("config.json", "r") as f:
 FAMILY_CHANNEL_ID = config["family_group_channel"]
 THEMES = config["themes"]
 DM_ENABLED = config.get("dm_enabled", True)
+ACCOUNT_ACCESS_ENABLED = config.get("account_access_enabled", False)
 
-# ==============================
-# State
-# ==============================
+# Tracks state in memory
 state = {
     "rotation_index": 0,
     "theme_index": 0,
     "last_theme_update": None,
 }
 
-MEMORY_DIR = "data/memory"
-
-def load_personality(name: str):
-    path = os.path.join(MEMORY_DIR, f"{name}.json")
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f), path
-    except FileNotFoundError:
-        return {"name": name, "growth_path": {}, "drift_bias": {}, "drift_cooldowns": {}, "last_drift": {}}, path
-
-def save_personality(path: str, data: dict):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-
-def evolve_personality(sister_info, event_type="interaction"):
-    personality, path = load_personality(sister_info["name"])
-    growth_path = personality.get("growth_path", {})
-    bias = personality.get("drift_bias", {})
-    cooldowns = personality.get("drift_cooldowns", {})
-    last_drift = personality.get("last_drift", {})
-
-    if not growth_path:
-        return
-
-    now = datetime.utcnow().timestamp()
-    traits = list(growth_path.keys())
-    weights = [bias.get(t, 1.0) for t in traits]
-    trait = random.choices(traits, weights=weights, k=1)[0]
-
-    # cooldown check
-    if trait in last_drift and (now - last_drift[trait]) < cooldowns.get(trait, 600):
-        return
-
-    # drift size
-    if event_type in ["dm", "organic"]:
-        delta = random.uniform(-0.05, 0.05)
-    elif event_type in ["ritual"]:
-        delta = random.uniform(-0.03, 0.03)
-    elif event_type in ["extreme"]:
-        delta = random.uniform(-0.15, 0.15)
-    else:
-        delta = random.uniform(-0.02, 0.02)
-
-    growth_path[trait] = min(1.0, max(0.0, growth_path[trait] + delta))
-    last_drift[trait] = now
-    personality["growth_path"] = growth_path
-    personality["last_drift"] = last_drift
-
-    save_personality(path, personality)
-    log_event(f"[EVOLVE] {sister_info['name']} ({event_type}) → {trait}={growth_path[trait]:.2f}")
+# ==============================
+# Account Access (stub)
+# ==============================
+async def perform_account_action(action: str, details: dict):
+    """
+    Stub for account access tasks. Inactive unless ACCOUNT_ACCESS_ENABLED = True.
+    Example actions: {"type": "purchase", "item": "X"}, {"type": "schedule_task"}.
+    """
+    if not ACCOUNT_ACCESS_ENABLED:
+        log_event(f"[ACCOUNT] Attempted {action} but account access is disabled.")
+        return False
+    log_event(f"[ACCOUNT] Executed: {action} with {details}")
+    # Placeholder: here you'd call payment APIs, cloud storage, etc.
+    return True
 
 # ==============================
 # Setup Sister Bots
 # ==============================
 sisters = []
 aria_bot = None
-
-# Keep track of last visible chat message in the family channel
-last_family_message = {"author": None, "content": None}
 
 for s in config["rotation"]:
     token = os.getenv(s["env_var"])
@@ -126,12 +86,10 @@ for s in config["rotation"]:
 
     @bot.event
     async def on_message(message, b=bot):
-        global last_family_message
-
         if message.author == b.user:
             return
 
-        # --- DM Handling ---
+        # Handle DMs
         if isinstance(message.channel, discord.DMChannel):
             if not DM_ENABLED:
                 return
@@ -141,67 +99,69 @@ for s in config["rotation"]:
                     sister=name,
                     user_message=message.content,
                     theme=get_current_theme(),
-                    role="dm",
-                    last_message=None  # DMs don’t need conversation context
+                    role="dm"
                 )
                 if reply:
                     await message.channel.send(reply)
                     log_event(f"[DM] {name} replied to {message.author}: {reply}")
                     append_conversation_log(
-                        sister=name, role="dm", theme=get_current_theme(),
-                        user_message=message.content, content=reply
+                        sister=name, role="dm",
+                        theme=get_current_theme(),
+                        user_message=message.content,
+                        content=reply
                     )
             except Exception as e:
                 print(f"[ERROR] DM reply failed for {name}: {e}")
+                log_event(f"[ERROR] DM reply failed for {name}: {e}")
             return
 
-        # --- Family Channel Handling ---
+        # Ignore outside family channel
         if message.channel.id != FAMILY_CHANNEL_ID:
             return
+        # Ignore ritual/system messages
         if message.content.startswith("🌅") or message.content.startswith("🌙"):
             return
 
-        # Update last visible family message (for conversational context)
-        last_family_message = {
-            "author": str(message.author),
-            "content": message.content
-        }
-
         name = b.sister_info["name"]
         rotation = get_today_rotation()
-        role, should_reply = None, False
+        role = None
+        should_reply = False
 
         if name == rotation["lead"]:
-            role, should_reply = "lead", True
+            role = "lead"; should_reply = True
         elif name in rotation["supports"]:
-            role, should_reply = "support", random.random() < 0.6
+            role = "support"; should_reply = random.random() < 0.6
         elif name == rotation["rest"]:
-            role, should_reply = "rest", random.random() < 0.2
+            role = "rest"; should_reply = random.random() < 0.2
 
         if should_reply and role:
-            style_hint = {
-                "lead": "Reply in 2–4 sentences, guiding the conversation.",
-                "support": "Reply in 1–2 sentences, playful or supportive.",
-                "rest": "Reply very briefly, 1 short sentence or phrase."
-            }[role]
+            if role == "lead":
+                style_hint = "Reply in 2–4 sentences, guiding the conversation."
+            elif role == "support":
+                style_hint = "Reply in 1–2 sentences, playful or supportive."
+            else:
+                style_hint = "Reply very briefly, 1 short sentence or phrase."
 
             try:
                 reply = await generate_llm_reply(
                     sister=name,
                     user_message=f"{message.author}: {message.content}\n{style_hint}",
                     theme=get_current_theme(),
-                    role=role,
-                    last_message=last_family_message["content"]
+                    role=role
                 )
                 if reply:
                     await message.channel.send(reply)
                     log_event(f"{name} replied as {role} to {message.author}: {reply}")
                     append_conversation_log(
-                        sister=name, role=role, theme=get_current_theme(),
-                        user_message=message.content, content=reply
+                        sister=name, role=role,
+                        theme=get_current_theme(),
+                        user_message=message.content,
+                        content=reply
                     )
             except Exception as e:
                 print(f"[ERROR] LLM reply failed for {name}: {e}")
+                log_event(f"[ERROR] LLM reply failed for {name}: {e}")
+
 # ==============================
 # Rotation + Theme Helpers
 # ==============================
@@ -219,6 +179,104 @@ def get_current_theme():
         state["last_theme_update"] = today
     return THEMES[state["theme_index"]]
 
+async def post_to_family(message: str, sender=None):
+    for bot in sisters:
+        if bot.is_ready():
+            if not sender or bot.sister_info["name"] == sender:
+                try:
+                    channel = bot.get_channel(FAMILY_CHANNEL_ID)
+                    if channel:
+                        await channel.send(message)
+                        log_event(f"{bot.sister_info['name']} posted: {message}")
+                    else:
+                        print(f"[ERROR] Channel {FAMILY_CHANNEL_ID} not found for {bot.sister_info['name']}")
+                except Exception as e:
+                    print(f"[ERROR] Failed to send with {bot.sister_info['name']}: {e}")
+                    log_event(f"[ERROR] Failed to send with {bot.sister_info['name']}: {e}")
+                break
+
+# ==============================
+# Scheduled Messages (Structured Rituals)
+# ==============================
+async def send_morning_message():
+    rotation = get_today_rotation()
+    theme = get_current_theme()
+    lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
+
+    lead_msg = await generate_llm_reply(
+        sister=lead,
+        user_message="Structured good morning: include today’s roles, theme, hygiene reminders, and discipline check. Stay natural but consistent (3–5 sentences).",
+        theme=theme,
+        role="lead"
+    )
+    await post_to_family(f"🌅 {lead_msg}", sender=lead)
+    append_ritual_log(lead, "lead", theme, lead_msg)
+
+    for s in supports:
+        if random.random() < 0.7:
+            reply = await generate_llm_reply(
+                sister=s,
+                user_message="Short supportive morning comment (1–2 sentences).",
+                theme=theme,
+                role="support"
+            )
+            if reply:
+                await post_to_family(reply, sender=s)
+                append_ritual_log(s, "support", theme, reply)
+
+    if random.random() < 0.2:
+        rest_reply = await generate_llm_reply(
+            sister=rest,
+            user_message="Quiet morning remark (1 sentence).",
+            theme=theme,
+            role="rest"
+        )
+        if rest_reply:
+            await post_to_family(rest_reply, sender=rest)
+            append_ritual_log(rest, "rest", theme, rest_reply)
+
+    state["rotation_index"] += 1
+    log_event(f"[SCHEDULER] Morning ritual completed with {lead} as lead")
+
+async def send_night_message():
+    rotation = get_today_rotation()
+    theme = get_current_theme()
+    lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
+
+    lead_msg = await generate_llm_reply(
+        sister=lead,
+        user_message="Structured good night: thank supporters, wish rest, ask for one reflection, remind about outfits, wake-up discipline, and overnight tasks. Natural but consistent (3–5 sentences).",
+        theme=theme,
+        role="lead"
+    )
+    await post_to_family(f"🌙 {lead_msg}", sender=lead)
+    append_ritual_log(lead, "lead", theme, lead_msg)
+
+    for s in supports:
+        if random.random() < 0.6:
+            reply = await generate_llm_reply(
+                sister=s,
+                user_message="Short supportive night comment (1–2 sentences).",
+                theme=theme,
+                role="support"
+            )
+            if reply:
+                await post_to_family(reply, sender=s)
+                append_ritual_log(s, "support", theme, reply)
+
+    if random.random() < 0.15:
+        rest_reply = await generate_llm_reply(
+            sister=rest,
+            user_message="Brief night remark (1 sentence).",
+            theme=theme,
+            role="rest"
+        )
+        if rest_reply:
+            await post_to_family(rest_reply, sender=rest)
+            append_ritual_log(rest, "rest", theme, rest_reply)
+
+    log_event(f"[SCHEDULER] Night ritual completed with {lead} as lead")
+
 # ==============================
 # FastAPI App
 # ==============================
@@ -227,11 +285,35 @@ app = FastAPI()
 @app.on_event("startup")
 async def startup_event():
     scheduler = AsyncIOScheduler()
+    scheduler.add_job(send_morning_message, "cron", hour=6, minute=0)
+    scheduler.add_job(send_night_message, "cron", hour=22, minute=0)
     scheduler.start()
+
     for s in sisters:
         asyncio.create_task(s.start(s.token))
-    log_event("[SYSTEM] Bots + scheduler active.")
+    log_event("[SYSTEM] Bots started with scheduler active.")
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+@app.get("/status")
+async def status():
+    rotation = get_today_rotation()
+    theme = get_current_theme()
+    return {
+        "bots": [s.sister_info["name"] for s in sisters],
+        "ready": [s.sister_info["name"] for s in sisters if s.is_ready()],
+        "rotation": rotation,
+        "theme": theme,
+        "account_access_enabled": ACCOUNT_ACCESS_ENABLED
+    }
+
+@app.get("/logs", response_class=PlainTextResponse)
+async def get_logs(lines: int = 50):
+    try:
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            all_lines = f.readlines()
+        return "".join(all_lines[-lines:])
+    except FileNotFoundError:
+        return "[LOGGER] No memory_log.txt found."
