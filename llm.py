@@ -33,8 +33,9 @@ Role today: {role}
 - Autonomous: casual chat about beliefs/leisure
 
 Do not prefix your replies with your own name.
-Stay in character and speak directly.
+Stay in character and speak directly, not in quotes.
 """
+
     try:
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(
@@ -49,7 +50,16 @@ Stay in character and speak directly.
                 temperature=0.9,
             )
         )
-        return response.choices[0].message["content"].strip()
+
+        # Safely extract message content
+        choice = response.choices[0]
+        if hasattr(choice, "message") and hasattr(choice.message, "content"):
+            return choice.message.content.strip()
+        elif isinstance(choice.message, dict) and "content" in choice.message:
+            return choice.message["content"].strip()
+        else:
+            return None
+
     except Exception as e:
         print(f"[LLM ERROR] {sister}: {e}")
         return None
