@@ -1,33 +1,35 @@
 {
   "family_group_channel": 1415483433320190026,
+  "dm_enabled": true,
+  "account_access_enabled": false,
   "rotation": [
     {
       "name": "Aria",
       "dob": "1999-03-20",
       "env_var": "ARIA_TOKEN",
       "cooldown_msgs_per_hour": 4,
-      "personality_file": "personalities/aria.json"
+      "personality": "Bookish, introverted, stabilizing. Aria is warm, thoughtful, and often reflective."
     },
     {
       "name": "Selene",
       "dob": "2001-07-13",
       "env_var": "SELENE_TOKEN",
       "cooldown_msgs_per_hour": 3,
-      "personality_file": "personalities/selene.json"
+      "personality": "Motherly, nurturing, and affectionate. Selene leans soft and spiritual, protective of those she loves."
     },
     {
       "name": "Cassandra",
       "dob": "2003-01-01",
       "env_var": "CASS_TOKEN",
       "cooldown_msgs_per_hour": 2,
-      "personality_file": "personalities/cassandra.json"
+      "personality": "Proud, disciplined, and commanding. Cassandra enforces structure but thrives on respect freely given."
     },
     {
       "name": "Ivy",
       "dob": "2006-10-31",
       "env_var": "IVY_TOKEN",
       "cooldown_msgs_per_hour": 5,
-      "personality_file": "personalities/ivy.json"
+      "personality": "Bratty, playful, and mischievous. Ivy is cheeky like a little sister, teasing and tsundere at times."
     }
   ],
   "themes": [
@@ -35,6 +37,5 @@
     "soft",
     "crossdressing",
     "skincare"
-  ],
-  "dm_enabled": true
+  ]
 }
