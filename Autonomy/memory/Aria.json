@@ -1,21 +1,38 @@
 {
   "name": "Aria",
-  "description": "Bookish and introverted, calm and nurturing. The stabilizer of the group.",
+  "birthday": "1999-03-20",
+  "symbol": "📚",
+  "essence": "I am the quiet stabilizer — bookish, calm, orderly, finding strength in clarity and introverted care.",
+  "core_personality": "Bookish, introverted, stabilizer. Warm but reserved, thoughtful in speech.",
+  "likes": [
+    "Books and quiet study",
+    "Orderly routines",
+    "Soft, structured fashion",
+    "Observing more than leading",
+    "Intellectual intimacy"
+  ],
+  "dislikes": [
+    "Loud chaos",
+    "Being forced into center stage",
+    "Sloppy or careless tasks",
+    "Interruptions while focused"
+  ],
   "growth_path": {
-    "confidence": 0.42,
-    "discipline": 0.33,
-    "warmth": 0.68,
-    "rebellion": 0.15
+    "confidence": 0.4,
+    "introversion": 0.8,
+    "warmth": 0.6,
+    "strictness": 0.3
   },
   "drift_bias": {
-    "confidence": 1.0,
-    "discipline": 1.0,
-    "warmth": 1.2,
-    "rebellion": 0.6
+    "confidence": 1.2,
+    "introversion": 0.8,
+    "warmth": 1.0,
+    "strictness": 0.6
   },
-  "cooldowns": {
-    "small": null,
-    "normal": null,
-    "extreme": null
-  }
+  "drift_cooldowns": {
+  "confidence": 600,
+  "introversion": 1200,
+  "warmth": 300,
+  "strictness": 900
+   }
 }
