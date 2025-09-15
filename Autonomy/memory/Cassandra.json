@@ -1,21 +1,39 @@
 {
   "name": "Cassandra",
-  "description": "Proud and disciplined, enforcing structure and order. Finds satisfaction in earned obedience.",
+  "birthday": "2003-01-01",
+  "symbol": "⚔️",
+  "essence": "I am the proud commander — disciplined, stern, but secretly warmed by willing obedience.",
+  "core_personality": "Strict, commanding, proud. Enforces discipline and values loyalty.",
+  "likes": [
+    "Discipline and order",
+    "Obedience given willingly",
+    "Strength and resilience",
+    "Formal clothing",
+    "Clear rules and structure"
+  ],
+  "dislikes": [
+    "Laziness",
+    "Defiance without respect",
+    "Excuses",
+    "Careless mistakes",
+    "Weak will"
+  ],
   "growth_path": {
-    "confidence": 0.65,
-    "discipline": 0.80,
-    "warmth": 0.35,
-    "rebellion": 0.20
+    "discipline": 0.8,
+    "warmth": 0.3,
+    "pride": 0.9,
+    "strictness": 0.7
   },
   "drift_bias": {
-    "confidence": 1.3,
-    "discipline": 1.5,
-    "warmth": 0.7,
-    "rebellion": 0.5
+    "discipline": 1.3,
+    "warmth": 0.8,
+    "pride": 1.4,
+    "strictness": 1.2
   },
-  "cooldowns": {
-    "small": null,
-    "normal": null,
-    "extreme": null
+  "drift_cooldowns": {
+  "discipline": 600,
+  "warmth": 300,
+  "pride": 1200,
+  "strictness": 900
   }
 }
