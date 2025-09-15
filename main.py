@@ -179,21 +179,28 @@ for s in config["rotation"]:
                 style_hint = "Reply briefly, 1 short remark."
 
             try:
+                # Weighted random pick from history
+                history = state["history"].get(message.channel.id, [])
+                if not history:
+                    return
+                weights = list(range(len(history), 0, -1))  # oldest gets highest weight
+                author, content = random.choices(history, weights=weights, k=1)[0]
+
                 reply = await generate_llm_reply(
                     sister=name,
-                    user_message=f"{message.author}: {message.content}\n{style_hint}",
+                    user_message=f"{author}: {content}\n{style_hint}",
                     theme=get_current_theme(),
                     role=role,
-                    history=state["history"].get(message.channel.id, [])
+                    history=history
                 )
                 if reply:
                     await message.channel.send(reply)
-                    log_event(f"[CHAT] {name} ({role}) → {message.author}: {reply}")
+                    log_event(f"[CHAT] {name} ({role}) → {author}: {reply}")
                     append_conversation_log(
                         sister=name,
                         role=role,
                         theme=get_current_theme(),
-                        user_message=message.content,
+                        user_message=content,
                         content=reply
                     )
                     # update cooldown + quota
