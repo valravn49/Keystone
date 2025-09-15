@@ -1,3 +1,4 @@
+# aria_commands.py
 import discord
 from nutrition import (
     log_food_entry,
@@ -6,6 +7,7 @@ from nutrition import (
     get_daily_summary
 )
 from logger import log_event, log_cage_event, log_plug_event, log_service_event
+from workouts import add_workout, remove_workout, list_workouts, get_workout_summary
 
 
 def setup_aria_commands(
@@ -88,4 +90,31 @@ def setup_aria_commands(
     @tree.command(name="nutrition-summary", description="Get today’s calorie/workout summary")
     async def slash_nutrition_summary(interaction: discord.Interaction):
         summary = get_daily_summary()
+        await interaction.response.send_message(summary, ephemeral=True)
+
+    # ==============================
+    # Workout Management
+    # ==============================
+    @tree.command(name="add-workout", description="Add or update a workout type (kcal/min)")
+    async def slash_add_workout(interaction: discord.Interaction, name: str, rate: int):
+        add_workout(name, rate)
+        await interaction.response.send_message(
+            f"✅ Workout added/updated: {name} ({rate} kcal/min)"
+        )
+
+    @tree.command(name="remove-workout", description="Remove a workout type")
+    async def slash_remove_workout(interaction: discord.Interaction, name: str):
+        remove_workout(name)
+        await interaction.response.send_message(f"🗑️ Workout removed: {name}")
+
+    @tree.command(name="list-workouts", description="List all available workouts")
+    async def slash_list_workouts(interaction: discord.Interaction):
+        workouts_text = list_workouts()
+        await interaction.response.send_message(
+            f"📋 **Available Workouts**:\n{workouts_text}", ephemeral=True
+        )
+
+    @tree.command(name="workout-summary", description="Get today’s workout summary only")
+    async def slash_workout_summary(interaction: discord.Interaction):
+        summary = get_workout_summary()
         await interaction.response.send_message(summary, ephemeral=True)
