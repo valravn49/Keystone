@@ -9,14 +9,13 @@ from datetime import datetime
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 
-from llm import generate_llm_reply
+from llm import generate_llm_reply   # Your LLM helper
 from logger import (
     log_event, LOG_FILE,
     append_conversation_log, append_ritual_log,
     log_cage_event, log_plug_event, log_service_event
 )
-from nutrition import log_workout_completion  # used in slash commands
-from aria_commands import setup_aria_commands  # ✅ Aria commands hooked here
+from aria_commands import setup_aria_commands
 
 # ==============================
 # Load config.json
@@ -28,11 +27,24 @@ FAMILY_CHANNEL_ID = config["family_group_channel"]
 THEMES = config["themes"]
 DM_ENABLED = config.get("dm_enabled", True)
 
-# Tracks state in memory
+# ==============================
+# State tracking
+# ==============================
 state = {
     "rotation_index": 0,
     "theme_index": 0,
     "last_theme_update": None,
+    "last_spontaneous": {},  # cooldown tracking
+}
+
+# ==============================
+# Spontaneous Conversation Cooldowns
+# ==============================
+SPONTANEOUS_COOLDOWNS = {
+    "Ivy": 3600,        # 1 hour
+    "Selene": 5400,     # 1.5 hours
+    "Cassandra": 7200,  # 2 hours
+    "Aria": 10800       # 3 hours
 }
 
 # ==============================
@@ -63,11 +75,12 @@ for s in config["rotation"]:
     async def on_ready(b=bot):
         print(f"[LOGIN] {b.sister_info['name']} logged in as {b.user}")
         log_event(f"{b.sister_info['name']} logged in as {b.user}")
+
         if b.sister_info["name"] == "Aria":
             try:
-                setup_aria_commands(b)  # ✅ load Aria commands
+                setup_aria_commands(b, state, get_today_rotation, send_morning_message, send_night_message)
                 await b.tree.sync()
-                print("[SLASH] Synced Aria commands.")
+                print("[SLASH] Synced Aria slash commands.")
             except Exception as e:
                 print(f"[SLASH ERROR] {e}")
 
@@ -185,7 +198,7 @@ async def post_to_family(message: str, sender=None):
                 break
 
 # ==============================
-# Scheduled Messages (LLM-driven)
+# Ritual Messages
 # ==============================
 async def send_morning_message():
     rotation = get_today_rotation()
@@ -267,6 +280,60 @@ async def send_night_message():
     log_event(f"[SCHEDULER] Night message completed with {lead} as lead")
 
 # ==============================
+# Spontaneous Conversations
+# ==============================
+async def delayed_reply(channel, text, min_delay=2, max_delay=6):
+    await asyncio.sleep(random.uniform(min_delay, max_delay))
+    await channel.send(text)
+
+async def random_sister_conversation():
+    now = datetime.utcnow().timestamp()
+
+    eligible = [
+        s for s in sisters
+        if now - state["last_spontaneous"].get(s.sister_info["name"], 0)
+        > SPONTANEOUS_COOLDOWNS.get(s.sister_info["name"], 7200)
+    ]
+    if not eligible:
+        return
+
+    starter_bot = random.choice(eligible)
+    starter = starter_bot.sister_info["name"]
+    state["last_spontaneous"][starter] = now
+
+    others = [s for s in sisters if s != starter_bot]
+    participants = [starter_bot] + random.sample(others, k=random.randint(1, 2))
+
+    theme = get_current_theme()
+    channel = starter_bot.get_channel(FAMILY_CHANNEL_ID)
+    if not channel:
+        return
+
+    opener = await generate_llm_reply(
+        sister=starter,
+        user_message="Start a casual chat about leisure, beliefs, or fun observations.",
+        theme=theme,
+        role="autonomous"
+    )
+    if opener:
+        await delayed_reply(channel, opener)
+        log_event(f"[ORGANIC] {starter} started: {opener}")
+        append_conversation_log(starter, "autonomous", theme, "organic opener", opener)
+
+    for p in participants[1:]:
+        if random.random() < 0.8:
+            reply = await generate_llm_reply(
+                sister=p.sister_info["name"],
+                user_message=f"Respond casually to {starter}'s opener.",
+                theme=theme,
+                role="autonomous"
+            )
+            if reply:
+                await delayed_reply(channel, reply)
+                log_event(f"[ORGANIC] {p.sister_info['name']} replied: {reply}")
+                append_conversation_log(p.sister_info["name"], "autonomous", theme, "organic followup", reply)
+
+# ==============================
 # FastAPI App
 # ==============================
 app = FastAPI()
@@ -276,6 +343,7 @@ async def startup_event():
     scheduler = AsyncIOScheduler()
     scheduler.add_job(send_morning_message, "cron", hour=6, minute=0)
     scheduler.add_job(send_night_message, "cron", hour=22, minute=0)
+    scheduler.add_job(random_sister_conversation, "interval", minutes=30)
     scheduler.start()
 
     for s in sisters:
