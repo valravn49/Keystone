@@ -9,14 +9,14 @@ from datetime import datetime
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 
-from llm import generate_llm_reply   # LLM helper
+from llm import generate_llm_reply
 from logger import (
     log_event, LOG_FILE,
     append_conversation_log, append_ritual_log,
     log_cage_event, log_plug_event, log_service_event
 )
-from nutrition import log_food_entry, log_workout_completion, set_calorie_targets, get_daily_summary
-from aria_commands import setup_aria_commands
+from nutrition import log_workout_completion  # used in slash commands
+from aria_commands import register_aria_commands  # ✅ Aria commands hooked here
 
 # ==============================
 # Load config.json
@@ -65,13 +65,9 @@ for s in config["rotation"]:
         log_event(f"{b.sister_info['name']} logged in as {b.user}")
         if b.sister_info["name"] == "Aria":
             try:
-                setup_aria_commands(
-                    b.tree, state,
-                    get_today_rotation, get_current_theme,
-                    send_morning_message, send_night_message
-                )
+                register_aria_commands(b)  # ✅ load Aria commands
                 await b.tree.sync()
-                print("[SLASH] Synced Aria slash commands.")
+                print("[SLASH] Synced Aria commands.")
             except Exception as e:
                 print(f"[SLASH ERROR] {e}")
 
