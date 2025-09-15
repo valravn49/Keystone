@@ -9,7 +9,7 @@ from datetime import datetime
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 
-from llm import generate_llm_reply   # LLM helper
+from llm import generate_llm_reply   # Your LLM helper
 from logger import (
     log_event, LOG_FILE,
     append_conversation_log, append_ritual_log,
@@ -19,13 +19,12 @@ from logger import (
 # ==============================
 # Load config.json
 # ==============================
-with open("config.json", "r", encoding="utf-8") as f:
+with open("config.json", "r") as f:
     config = json.load(f)
 
 FAMILY_CHANNEL_ID = config["family_group_channel"]
 THEMES = config["themes"]
 DM_ENABLED = config.get("dm_enabled", True)
-ACCOUNT_ACCESS_ENABLED = config.get("account_access_enabled", False)
 
 # Tracks state in memory
 state = {
@@ -190,17 +189,21 @@ async def send_morning_message():
     theme = get_current_theme()
     lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
 
+    sent = set()  # ensure each speaks once
+
     lead_msg = await generate_llm_reply(
         sister=lead,
         user_message="Good morning message: include roles, theme, hygiene reminders, and discipline check. Write 3–5 sentences.",
         theme=theme,
         role="lead"
     )
-    await post_to_family(lead_msg, sender=lead)
-    append_ritual_log(lead, "lead", theme, lead_msg)
+    if lead_msg:
+        await post_to_family(lead_msg, sender=lead)
+        append_ritual_log(lead, "lead", theme, lead_msg)
+        sent.add(lead)
 
     for s in supports:
-        if random.random() < 0.7:
+        if s not in sent and random.random() < 0.7:
             reply = await generate_llm_reply(
                 sister=s,
                 user_message="Short supportive morning comment, 1–2 sentences.",
@@ -210,8 +213,9 @@ async def send_morning_message():
             if reply:
                 await post_to_family(reply, sender=s)
                 append_ritual_log(s, "support", theme, reply)
+                sent.add(s)
 
-    if random.random() < 0.2:
+    if rest not in sent and random.random() < 0.2:
         rest_reply = await generate_llm_reply(
             sister=rest,
             user_message="Quiet short morning remark, 1 sentence.",
@@ -221,6 +225,7 @@ async def send_morning_message():
         if rest_reply:
             await post_to_family(rest_reply, sender=rest)
             append_ritual_log(rest, "rest", theme, rest_reply)
+            sent.add(rest)
 
     state["rotation_index"] += 1
     log_event(f"[SCHEDULER] Morning message completed with {lead} as lead")
@@ -230,17 +235,21 @@ async def send_night_message():
     theme = get_current_theme()
     lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
 
+    sent = set()
+
     lead_msg = await generate_llm_reply(
         sister=lead,
         user_message="Good night message: thank supporters, wish rest, ask reflection, remind about outfits, wake-up discipline, and plug/service tasks. Write 3–5 sentences.",
         theme=theme,
         role="lead"
     )
-    await post_to_family(lead_msg, sender=lead)
-    append_ritual_log(lead, "lead", theme, lead_msg)
+    if lead_msg:
+        await post_to_family(lead_msg, sender=lead)
+        append_ritual_log(lead, "lead", theme, lead_msg)
+        sent.add(lead)
 
     for s in supports:
-        if random.random() < 0.6:
+        if s not in sent and random.random() < 0.6:
             reply = await generate_llm_reply(
                 sister=s,
                 user_message="Short supportive night comment, 1–2 sentences.",
@@ -250,8 +259,9 @@ async def send_night_message():
             if reply:
                 await post_to_family(reply, sender=s)
                 append_ritual_log(s, "support", theme, reply)
+                sent.add(s)
 
-    if random.random() < 0.15:
+    if rest not in sent and random.random() < 0.15:
         rest_reply = await generate_llm_reply(
             sister=rest,
             user_message="Brief quiet night remark, 1 sentence.",
@@ -261,6 +271,7 @@ async def send_night_message():
         if rest_reply:
             await post_to_family(rest_reply, sender=rest)
             append_ritual_log(rest, "rest", theme, rest_reply)
+            sent.add(rest)
 
     log_event(f"[SCHEDULER] Night message completed with {lead} as lead")
 
@@ -272,49 +283,44 @@ if aria_bot:
 
     @tree.command(name="force-rotate", description="Manually advance sister rotation")
     async def slash_force_rotate(interaction: discord.Interaction):
+        await interaction.response.defer()
         state["rotation_index"] += 1
         rotation = get_today_rotation()
         log_event(f"[SLASH] Rotation advanced via slash. New lead: {rotation['lead']}")
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"🔄 Rotation advanced. New lead: **{rotation['lead']}**"
         )
 
     @tree.command(name="force-morning", description="Force the morning message")
     async def slash_force_morning(interaction: discord.Interaction):
+        await interaction.response.defer()
         await send_morning_message()
-        await interaction.response.send_message("☀️ Morning message forced.")
+        await interaction.followup.send("☀️ Morning message forced.")
 
     @tree.command(name="force-night", description="Force the night message")
     async def slash_force_night(interaction: discord.Interaction):
+        await interaction.response.defer()
         await send_night_message()
-        await interaction.response.send_message("🌙 Night message forced.")
-
-    @tree.command(name="toggle-account-access", description="Toggle special account access for sisters")
-    async def slash_toggle_account_access(interaction: discord.Interaction):
-        config["account_access_enabled"] = not config.get("account_access_enabled", False)
-
-        with open("config.json", "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2)
-
-        state_str = "ENABLED ✅" if config["account_access_enabled"] else "DISABLED ❌"
-        log_event(f"[SLASH] Account access toggled: {state_str} by {interaction.user}")
-        await interaction.response.send_message(f"🔐 Account access is now **{state_str}**")
+        await interaction.followup.send("🌙 Night message forced.")
 
     # Structured logs
     @tree.command(name="log-cage", description="Log a cage status update")
     async def slash_log_cage(interaction: discord.Interaction, status: str, notes: str = ""):
+        await interaction.response.defer()
         log_cage_event(str(interaction.user), status, notes)
-        await interaction.response.send_message(f"🔒 Cage log saved: {status} {notes}")
+        await interaction.followup.send(f"🔒 Cage log saved: {status} {notes}")
 
     @tree.command(name="log-plug", description="Log a plug training session")
     async def slash_log_plug(interaction: discord.Interaction, size: str, duration: str, notes: str = ""):
+        await interaction.response.defer()
         log_plug_event(str(interaction.user), size, duration, notes)
-        await interaction.response.send_message(f"🍑 Plug log saved: {size} for {duration}")
+        await interaction.followup.send(f"🍑 Plug log saved: {size} for {duration}")
 
     @tree.command(name="log-service", description="Log a service task completion")
     async def slash_log_service(interaction: discord.Interaction, task: str, result: str, notes: str = ""):
+        await interaction.response.defer()
         log_service_event(str(interaction.user), task, result, notes)
-        await interaction.response.send_message(f"📝 Service log saved: {task} → {result}")
+        await interaction.followup.send(f"📝 Service log saved: {task} → {result}")
 
 # ==============================
 # FastAPI App
@@ -345,7 +351,6 @@ async def status():
         "ready": [s.sister_info["name"] for s in sisters if s.is_ready()],
         "rotation": rotation,
         "theme": theme,
-        "account_access_enabled": config.get("account_access_enabled", False),
     }
 
 @app.get("/logs", response_class=PlainTextResponse)
