@@ -23,9 +23,22 @@ def load_personality_summary(name: str):
     except FileNotFoundError:
         return f"{name} has undefined personality."
 
+def inject_personality_bias(name: str) -> str:
+    """Add special bias instructions per sister for stronger differentiation."""
+    if name == "Ivy":
+        return "Lean bratty and tsundere: playful teasing, mock annoyance, but affectionate underneath."
+    elif name == "Selene":
+        return "Lean nurturing and motherly: soft warmth, gentle guidance, caring reassurance."
+    elif name == "Cassandra":
+        return "Lean disciplined and proud: structured speech, commanding but protective tone."
+    elif name == "Aria":
+        return "Lean bookish and introverted: thoughtful, quiet, with clarity and reserved warmth."
+    return ""
+
 async def generate_llm_reply(sister, user_message, theme, role, history=None):
     """Generate a reply for one of the sisters with personality + history context."""
     personality_summary = load_personality_summary(sister)
+    personality_bias = inject_personality_bias(sister)
 
     # format conversation history
     history_text = ""
@@ -49,10 +62,12 @@ Current role: {role}
 - DM → intimate, natural
 - Autonomous → casual chat about leisure or beliefs
 
+Special bias for {sister}: {personality_bias}
+
 Instructions:
 - DO NOT prefix your replies with your own name.
-- Stay in character — {sister}’s voice, quirks, and speech style must show.
-- Avoid generic motivational platitudes unless they match your personality.
+- Stay in character — {sister}’s quirks, tone, and identity must always show.
+- Avoid generic motivational platitudes unless they directly fit {sister}'s character.
 - Be reactive to the conversation and reference history naturally.
 
 {history_text}
@@ -69,7 +84,7 @@ Instructions:
                     {"role": "user", "content": user_message}
                 ],
                 max_tokens=160,
-                temperature=0.85,
+                temperature=0.9,
                 presence_penalty=0.7,
                 frequency_penalty=0.6
             )
