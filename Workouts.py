@@ -1,99 +1,304 @@
-import os
-import json
-from datetime import datetime
-
-WORKOUT_FILE = "data/workout_log.jsonl"
-os.makedirs("data", exist_ok=True)
+import random
+from logger import log_event
 
 # ==============================
-# Workout Library
+# Define full bodyweight workouts with instructions
 # ==============================
-WORKOUT_LIBRARY = {
-    "pushups": {"sets": 3, "reps": "10–15", "rest": "60s",
-                "instructions": "Keep body straight, lower chest to floor, push back up."},
-    "squats": {"sets": 3, "reps": "12–20", "rest": "60s",
-               "instructions": "Feet shoulder-width, lower hips, thighs parallel, drive up."},
-    "plank": {"sets": 3, "reps": "30–60s hold", "rest": "60s",
-              "instructions": "Keep core tight, elbows under shoulders, avoid sagging hips."},
-    "burpees": {"sets": 3, "reps": "8–12", "rest": "90s",
-                "instructions": "Drop into pushup, jump feet in, explode upward jump."},
-    "lunges": {"sets": 3, "reps": "10/leg", "rest": "60s",
-               "instructions": "Step forward, knees 90°, push back through heel."},
-    "forward_fold": {"sets": 2, "reps": "30–60s hold", "rest": "30s",
-                     "instructions": "Fold forward at hips, relax back, stretch hamstrings."},
-    "dips": {"sets": 3, "reps": "8–12", "rest": "90s",
-             "instructions": "Use chair/bench, lower body until elbows 90°, push back up."},
-    "glute_bridge": {"sets": 3, "reps": "12–20", "rest": "60s",
-                     "instructions": "Lie on back, push hips upward, squeeze glutes."},
-    "leg_raises": {"sets": 3, "reps": "10–15", "rest": "60s",
-                   "instructions": "Lie on back, lift straight legs to 90°, control down."},
-    "mountain_climbers": {"sets": 3, "reps": "20–40s", "rest": "60s",
-                          "instructions": "Plank position, alternate knees to chest quickly."},
-    "jump_squats": {"sets": 3, "reps": "8–15", "rest": "90s",
-                    "instructions": "Perform squat, explode upward jump, land softly."},
-    "cat_cow": {"sets": 2, "reps": "5–10 cycles", "rest": "30s",
-                "instructions": "On hands/knees, alternate arching & rounding spine."},
-    "diamond_pushups": {"sets": 3, "reps": "6–12", "rest": "90s",
-                        "instructions": "Hands form diamond, lower chest, elbows close to body."},
-    "sumo_squats": {"sets": 3, "reps": "12–20", "rest": "60s",
-                    "instructions": "Feet wide, toes out, squat deeply, engage inner thighs."},
-    "side_plank": {"sets": 3, "reps": "20–45s/side", "rest": "60s",
-                   "instructions": "Lie on side, lift hips, hold straight line."},
-    "high_knees": {"sets": 3, "reps": "20–40s", "rest": "60s",
-                   "instructions": "Run in place, drive knees toward chest quickly."},
-    "reverse_lunges": {"sets": 3, "reps": "10/leg", "rest": "60s",
-                       "instructions": "Step back, lower until knees 90°, return to start."},
-    "shoulder_openers": {"sets": 2, "reps": "5–10 cycles", "rest": "30s",
-                         "instructions": "Clasp hands behind back, open chest, stretch shoulders."},
-    "deep_breathing": {"sets": 2, "reps": "5 mins", "rest": "—",
-                       "instructions": "Slow inhale through nose, exhale fully through mouth."}
+WORKOUTS = {
+    "day1": {  # Upper/Lower/Core
+        "morning": [
+            {
+                "name": "Push-ups",
+                "sets": "3 x 12",
+                "instructions": [
+                    "Keep hands shoulder-width apart",
+                    "Lower chest until just above the floor",
+                    "Elbows tucked at ~45 degrees",
+                    "Push back up keeping body straight"
+                ]
+            },
+            {
+                "name": "Squats",
+                "sets": "3 x 15",
+                "instructions": [
+                    "Feet shoulder-width apart",
+                    "Lower hips until thighs parallel",
+                    "Keep chest up and knees tracking over toes",
+                    "Stand tall and squeeze glutes"
+                ]
+            },
+            {
+                "name": "Plank",
+                "sets": "3 x 30s",
+                "instructions": [
+                    "Forearms on ground, elbows under shoulders",
+                    "Keep body in straight line",
+                    "Engage core and glutes",
+                    "Do not let hips sag"
+                ]
+            },
+        ],
+        "night": [
+            {
+                "name": "Lunges",
+                "sets": "3 x 10 each leg",
+                "instructions": [
+                    "Step forward and lower until both knees at 90°",
+                    "Front knee above ankle, not past toes",
+                    "Push through heel to return",
+                    "Alternate legs each rep"
+                ]
+            },
+            {
+                "name": "Dips (chair)",
+                "sets": "3 x 10",
+                "instructions": [
+                    "Hands on edge of chair, fingers forward",
+                    "Lower until elbows at 90°",
+                    "Keep back close to chair",
+                    "Push up fully but don’t lock elbows"
+                ]
+            },
+            {
+                "name": "Leg Raises",
+                "sets": "3 x 12",
+                "instructions": [
+                    "Lie flat, hands under hips",
+                    "Lift legs slowly to 90°",
+                    "Lower legs without touching floor",
+                    "Keep core tight"
+                ]
+            },
+        ]
+    },
+
+    "day2": {  # Strength + Core
+        "morning": [
+            {
+                "name": "Incline Push-ups",
+                "sets": "3 x 12",
+                "instructions": [
+                    "Hands on bench or table",
+                    "Lower chest toward edge",
+                    "Body stays straight",
+                    "Push back to start position"
+                ]
+            },
+            {
+                "name": "Bulgarian Split Squats",
+                "sets": "3 x 10 each leg",
+                "instructions": [
+                    "Rear foot elevated on chair",
+                    "Lower until front thigh parallel",
+                    "Keep torso upright",
+                    "Drive through front heel to rise"
+                ]
+            },
+            {
+                "name": "Side Plank",
+                "sets": "3 x 20s each side",
+                "instructions": [
+                    "Elbow under shoulder",
+                    "Lift hips into straight line",
+                    "Hold without dropping",
+                    "Switch sides"
+                ]
+            },
+        ],
+        "night": [
+            {
+                "name": "Jump Squats",
+                "sets": "3 x 12",
+                "instructions": [
+                    "Perform normal squat",
+                    "Explosively jump upward",
+                    "Land softly, knees bent",
+                    "Repeat immediately"
+                ]
+            },
+            {
+                "name": "Diamond Push-ups",
+                "sets": "3 x 8",
+                "instructions": [
+                    "Hands form diamond under chest",
+                    "Keep elbows close",
+                    "Lower chest slowly",
+                    "Push up with triceps focus"
+                ]
+            },
+            {
+                "name": "Bicycle Crunches",
+                "sets": "3 x 20 (10 per side)",
+                "instructions": [
+                    "Lie on back, hands behind head",
+                    "Bring opposite elbow to knee",
+                    "Alternate sides with pedaling motion",
+                    "Keep core tight"
+                ]
+            },
+        ]
+    },
+
+    "day3": {  # Shoulders/Glutes/Core
+        "morning": [
+            {
+                "name": "Pike Push-ups",
+                "sets": "3 x 10",
+                "instructions": [
+                    "Start in downward dog position",
+                    "Bend elbows lowering head to floor",
+                    "Push back up through shoulders",
+                    "Keep hips high"
+                ]
+            },
+            {
+                "name": "Glute Bridges",
+                "sets": "3 x 15",
+                "instructions": [
+                    "Lie on back, knees bent",
+                    "Lift hips until straight line knees-shoulders",
+                    "Squeeze glutes at top",
+                    "Lower slowly"
+                ]
+            },
+            {
+                "name": "Russian Twists",
+                "sets": "3 x 16 (8 each side)",
+                "instructions": [
+                    "Sit with knees bent, heels off ground",
+                    "Twist torso side to side",
+                    "Touch ground beside hip each twist",
+                    "Keep core tight"
+                ]
+            },
+        ],
+        "night": [
+            {
+                "name": "Step-ups (chair/bench)",
+                "sets": "3 x 12 each leg",
+                "instructions": [
+                    "Step up with one leg onto chair",
+                    "Drive through heel to stand tall",
+                    "Step down under control",
+                    "Alternate legs"
+                ]
+            },
+            {
+                "name": "Decline Push-ups",
+                "sets": "3 x 10",
+                "instructions": [
+                    "Feet elevated on chair",
+                    "Hands on floor shoulder-width",
+                    "Lower chest slowly",
+                    "Push up keeping core tight"
+                ]
+            },
+            {
+                "name": "Flutter Kicks",
+                "sets": "3 x 30s",
+                "instructions": [
+                    "Lie on back, hands under hips",
+                    "Lift legs a few inches",
+                    "Kick legs up/down in small motions",
+                    "Keep core braced"
+                ]
+            },
+        ]
+    },
+
+    "day4": {  # Recovery / Stretching
+        "morning": [
+            {
+                "name": "Cat-Cow Stretch",
+                "sets": "2 x 6 breaths",
+                "instructions": [
+                    "Start on all fours",
+                    "Arch back (cow) while inhaling",
+                    "Round spine (cat) while exhaling",
+                    "Move slowly and controlled"
+                ]
+            },
+            {
+                "name": "Hamstring Stretch",
+                "sets": "2 x 20s each side",
+                "instructions": [
+                    "Sit with one leg extended",
+                    "Reach toward foot without rounding back",
+                    "Hold stretch gently",
+                    "Switch legs"
+                ]
+            },
+            {
+                "name": "Child’s Pose",
+                "sets": "2 x 30s",
+                "instructions": [
+                    "Kneel and sit back onto heels",
+                    "Stretch arms forward on floor",
+                    "Relax shoulders and breathe",
+                    "Sink deeper with each exhale"
+                ]
+            },
+        ],
+        "night": [
+            {
+                "name": "Hip Flexor Stretch",
+                "sets": "2 x 20s each side",
+                "instructions": [
+                    "Kneel with one foot forward",
+                    "Shift hips forward gently",
+                    "Keep chest upright",
+                    "Switch legs"
+                ]
+            },
+            {
+                "name": "Seated Forward Fold",
+                "sets": "2 x 20s",
+                "instructions": [
+                    "Sit with legs straight out",
+                    "Fold forward at hips",
+                    "Reach toward toes, avoid rounding spine",
+                    "Hold gently"
+                ]
+            },
+            {
+                "name": "Box Breathing",
+                "sets": "5 rounds",
+                "instructions": [
+                    "Inhale for 4 counts",
+                    "Hold for 4 counts",
+                    "Exhale for 4 counts",
+                    "Hold for 4 counts, repeat"
+                ]
+            },
+        ]
+    }
 }
 
 # ==============================
-# 4-Day Rotation
+# Helpers
 # ==============================
-ROTATION = {
-    "day1": {"morning": ["pushups", "squats", "plank"],
-             "night": ["burpees", "lunges", "forward_fold"]},
-    "day2": {"morning": ["dips", "glute_bridge", "leg_raises"],
-             "night": ["mountain_climbers", "jump_squats", "cat_cow"]},
-    "day3": {"morning": ["diamond_pushups", "sumo_squats", "side_plank"],
-             "night": ["high_knees", "reverse_lunges", "shoulder_openers"]},
-    "day4": {"morning": ["cat_cow", "forward_fold", "shoulder_openers"],
-             "night": ["plank", "glute_bridge", "deep_breathing"]},  # Active rest day
-}
-
-def get_workout_routine(day_index: int, time_of_day="morning"):
-    """Return structured workout routine for a given day/time."""
-    keys = list(ROTATION.keys())
-    day_key = keys[day_index % len(keys)]
-    return ROTATION[day_key][time_of_day]
+def get_workout_routine(day_index, time_of_day):
+    """Return workout routine for a given day index (0–3) and time ('morning'/'night')."""
+    day_key = f"day{day_index + 1}"
+    return WORKOUTS.get(day_key, {}).get(time_of_day, [])
 
 def workout_summary(routine):
-    """Format workout instructions."""
+    """Create formatted workout summary with instructions."""
+    if not routine:
+        return "Rest day — focus on recovery, stretching, and hydration."
+
     lines = []
     for ex in routine:
-        w = WORKOUT_LIBRARY[ex]
-        lines.append(
-            f"**{ex.replace('_',' ').capitalize()}** – {w['sets']} sets of {w['reps']}, rest {w['rest']}.\n"
-            f"➡️ {w['instructions']}"
-        )
-    return "\n\n".join(lines)
+        lines.append(f"**{ex['name']}** — {ex['sets']}")
+        for step in ex["instructions"]:
+            lines.append(f"  • {step}")
+        lines.append("")  # spacing
+    return "\n".join(lines).strip()
 
-def log_workout(user: str, time_of_day: str, completed: list):
-    """Log a workout entry."""
-    entry = {
-        "timestamp": datetime.utcnow().isoformat(),
-        "user": user,
-        "time_of_day": time_of_day,
-        "completed": completed,
-    }
-    with open(WORKOUT_FILE, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
-    return entry
-
-def read_workouts():
-    if not os.path.exists(WORKOUT_FILE):
-        return []
-    with open(WORKOUT_FILE, "r", encoding="utf-8") as f:
-        return [json.loads(line) for line in f]
+def log_workout(user, time_of_day, routine):
+    """Log completed workout to memory_log.txt."""
+    if not routine:
+        log_event(f"[WORKOUT] {user} rest day ({time_of_day})")
+        return
+    exercises = ", ".join([ex["name"] for ex in routine])
+    log_event(f"[WORKOUT] {user} completed {time_of_day} workout: {exercises}")
