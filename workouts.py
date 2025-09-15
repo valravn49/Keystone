@@ -45,7 +45,7 @@ def _load_data():
 
 
 # Load existing logs on startup
-_loa d_data()
+_load_data()
 
 
 # ==============================
