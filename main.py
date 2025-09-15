@@ -9,13 +9,13 @@ from datetime import datetime
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 
-from llm import generate_llm_reply   # LLM helper
+from llm import generate_llm_reply
 from logger import (
     log_event, LOG_FILE,
     append_conversation_log, append_ritual_log,
     log_cage_event, log_plug_event, log_service_event
 )
-from workouts import get_workout_routine, workout_summary, get_day_label
+from nutrition import log_calories, log_workout_completion
 
 # ==============================
 # Load config.json
@@ -29,7 +29,7 @@ DM_ENABLED = config.get("dm_enabled", True)
 
 # Tracks state in memory
 state = {
-    "rotation_index": 0,       # rotation for rituals and workouts
+    "rotation_index": 0,
     "theme_index": 0,
     "last_theme_update": None,
 }
@@ -192,7 +192,7 @@ async def send_morning_message():
 
     lead_msg = await generate_llm_reply(
         sister=lead,
-        user_message="Good morning message: include roles, theme, hygiene reminders, and discipline check. Write 3–5 sentences.",
+        user_message="Good morning message: include roles, theme, hygiene reminders, discipline check, and today's workout plan.",
         theme=theme,
         role="lead"
     )
@@ -232,7 +232,7 @@ async def send_night_message():
 
     lead_msg = await generate_llm_reply(
         sister=lead,
-        user_message="Good night message: thank supporters, wish rest, ask reflection, remind about outfits, wake-up discipline, and plug/service tasks. Write 3–5 sentences.",
+        user_message="Good night message: thank supporters, wish rest, ask reflection, remind about outfits, wake-up discipline, plug/service tasks, and CHECK-IN for morning/evening workouts completion.",
         theme=theme,
         role="lead"
     )
@@ -262,6 +262,9 @@ async def send_night_message():
             await post_to_family(rest_reply, sender=rest)
             append_ritual_log(rest, "rest", theme, rest_reply)
 
+    # nightly workout log placeholder
+    today = datetime.now().strftime("%Y-%m-%d")
+    log_workout_completion(today, "pending", "pending", notes="Awaiting user response.")
     log_event(f"[SCHEDULER] Night message completed with {lead} as lead")
 
 # ==============================
@@ -270,57 +273,18 @@ async def send_night_message():
 if aria_bot:
     tree = aria_bot.tree
 
-    @tree.command(name="force-rotate", description="Manually advance sister rotation")
-    async def slash_force_rotate(interaction: discord.Interaction):
-        state["rotation_index"] += 1
-        rotation = get_today_rotation()
-        log_event(f"[SLASH] Rotation advanced via slash. New lead: {rotation['lead']}")
+    @tree.command(name="log-workout", description="Log your workout completion")
+    async def slash_log_workout(
+        interaction: discord.Interaction,
+        morning: str,
+        evening: str,
+        notes: str = ""
+    ):
+        today = datetime.now().strftime("%Y-%m-%d")
+        log_workout_completion(today, morning, evening, notes)
         await interaction.response.send_message(
-            f"🔄 Rotation advanced. New lead: **{rotation['lead']}**"
+            f"💪 Workout log saved for {today}: Morning={morning}, Evening={evening}, Notes={notes}"
         )
-
-    @tree.command(name="force-morning", description="Force the morning message")
-    async def slash_force_morning(interaction: discord.Interaction):
-        await send_morning_message()
-        await interaction.response.send_message("☀️ Morning message forced.")
-
-    @tree.command(name="force-night", description="Force the night message")
-    async def slash_force_night(interaction: discord.Interaction):
-        await send_night_message()
-        await interaction.response.send_message("🌙 Night message forced.")
-
-    # Workout command
-    @tree.command(name="workout-today", description="Show today's morning and night workout")
-    async def slash_workout_today(interaction: discord.Interaction):
-        day_index = state["rotation_index"] % 4
-        day_label = get_day_label(day_index)
-        morning_routine = get_workout_routine(day_index, "morning")
-        night_routine = get_workout_routine(day_index, "night")
-
-        morning_msg = workout_summary(morning_routine)
-        night_msg = workout_summary(night_routine)
-
-        await interaction.response.send_message(
-            f"🏋️ **Today's Workout: {day_label}**\n\n"
-            f"☀️ Morning:\n{morning_msg}\n\n"
-            f"🌙 Night:\n{night_msg}"
-        )
-
-    # Structured logs
-    @tree.command(name="log-cage", description="Log a cage status update")
-    async def slash_log_cage(interaction: discord.Interaction, status: str, notes: str = ""):
-        log_cage_event(str(interaction.user), status, notes)
-        await interaction.response.send_message(f"🔒 Cage log saved: {status} {notes}")
-
-    @tree.command(name="log-plug", description="Log a plug training session")
-    async def slash_log_plug(interaction: discord.Interaction, size: str, duration: str, notes: str = ""):
-        log_plug_event(str(interaction.user), size, duration, notes)
-        await interaction.response.send_message(f"🍑 Plug log saved: {size} for {duration}")
-
-    @tree.command(name="log-service", description="Log a service task completion")
-    async def slash_log_service(interaction: discord.Interaction, task: str, result: str, notes: str = ""):
-        log_service_event(str(interaction.user), task, result, notes)
-        await interaction.response.send_message(f"📝 Service log saved: {task} → {result}")
 
 # ==============================
 # FastAPI App
@@ -341,40 +305,3 @@ async def startup_event():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-
-@app.get("/status")
-async def status():
-    rotation = get_today_rotation()
-    theme = get_current_theme()
-    return {
-        "bots": [s.sister_info["name"] for s in sisters],
-        "ready": [s.sister_info["name"] for s in sisters if s.is_ready()],
-        "rotation": rotation,
-        "theme": theme,
-    }
-
-@app.get("/logs", response_class=PlainTextResponse)
-async def get_logs(lines: int = 50):
-    try:
-        with open(LOG_FILE, "r", encoding="utf-8") as f:
-            all_lines = f.readlines()
-        return "".join(all_lines[-lines:])
-    except FileNotFoundError:
-        return "[LOGGER] No memory_log.txt found."
-
-@app.post("/force-rotate")
-async def force_rotate():
-    state["rotation_index"] += 1
-    rotation = get_today_rotation()
-    log_event(f"Rotation manually advanced. New lead: {rotation['lead']}")
-    return {"status": "rotation advanced", "new_lead": rotation["lead"]}
-
-@app.post("/force-morning")
-async def force_morning():
-    await send_morning_message()
-    return {"status": "morning message forced"}
-
-@app.post("/force-night")
-async def force_night():
-    await send_night_message()
-    return {"status": "night message forced"}
