@@ -1,102 +1,87 @@
+# nutrition.py
 import os
-import json
 from datetime import datetime
 
-# ==============================
-# File Paths
-# ==============================
-NUTRITION_FILE = "data/nutrition_log.jsonl"
-TARGET_FILE = "data/nutrition_targets.json"
+DATA_DIR = "data"
+CALORIE_LOG = os.path.join(DATA_DIR, "calorie_log.txt")
+WORKOUT_LOG = os.path.join(DATA_DIR, "workout_log.txt")
 
-os.makedirs("data", exist_ok=True)
+os.makedirs(DATA_DIR, exist_ok=True)
 
-# ==============================
-# Core Logging Functions
-# ==============================
-def log_meal(user: str, description: str, calories: int, macros: dict):
-    """Append a meal entry to the log file."""
-    entry = {
-        "timestamp": datetime.utcnow().isoformat(),
-        "user": user,
-        "description": description,
-        "calories": calories,
-        "macros": macros,
-    }
-    with open(NUTRITION_FILE, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
-    return entry
-
-def read_meals():
-    """Return all logged meals as a list of dicts."""
-    if not os.path.exists(NUTRITION_FILE):
+# =========================
+# Helpers
+# =========================
+def _read_log(file_path: str):
+    if not os.path.exists(file_path):
         return []
-    with open(NUTRITION_FILE, "r", encoding="utf-8") as f:
-        return [json.loads(line) for line in f]
+    with open(file_path, "r", encoding="utf-8") as f:
+        return f.readlines()
 
-def delete_last_meal(user: str):
-    """Delete the last logged meal for a given user."""
-    meals = read_meals()
-    filtered = []
-    removed = False
-    for m in reversed(meals):
-        if not removed and m["user"] == user:
-            removed = True
-            continue
-        filtered.insert(0, m)
-    with open(NUTRITION_FILE, "w", encoding="utf-8") as f:
-        for m in filtered:
-            f.write(json.dumps(m) + "\n")
-    return removed
+def _write_log(file_path: str, lines: list):
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
 
-def edit_last_meal(user: str, description: str = None, calories: int = None, macros: dict = None):
-    """Edit the most recent meal for a user."""
-    meals = read_meals()
-    for m in reversed(meals):
-        if m["user"] == user:
-            if description: m["description"] = description
-            if calories: m["calories"] = calories
-            if macros: m["macros"] = macros
-            break
-    with open(NUTRITION_FILE, "w", encoding="utf-8") as f:
-        for m in meals:
-            f.write(json.dumps(m) + "\n")
-    return True
+def _format_entry(prefix: str, user: str, detail: str, notes: str = "") -> str:
+    return f"{datetime.utcnow().isoformat()} {prefix} {user} {detail} {notes}\n"
 
-# ==============================
-# Target Handling
-# ==============================
-def set_targets(user: str, maintenance: int, weightloss: int):
-    targets = {}
-    if os.path.exists(TARGET_FILE):
-        with open(TARGET_FILE, "r", encoding="utf-8") as f:
-            targets = json.load(f)
-    targets[user] = {"maintenance": maintenance, "weightloss": weightloss}
-    with open(TARGET_FILE, "w", encoding="utf-8") as f:
-        json.dump(targets, f, indent=2)
-    return targets[user]
+# =========================
+# Logging functions
+# =========================
+def log_calories(user: str, calories: int, meal: str, notes: str = ""):
+    """Append a calorie intake entry."""
+    entry = _format_entry("[CALORIES]", user, f"ate {calories} kcal ({meal})", notes)
+    with open(CALORIE_LOG, "a", encoding="utf-8") as f:
+        f.write(entry)
+    print(f"[NUTRITION] Logged calories: {entry.strip()}")
 
-def get_targets(user: str):
-    if not os.path.exists(TARGET_FILE):
-        return None
-    with open(TARGET_FILE, "r", encoding="utf-8") as f:
-        targets = json.load(f)
-    return targets.get(user, None)
+def log_workout_completion(user: str, workout: str, duration: str, notes: str = ""):
+    """Append a workout completion entry."""
+    entry = _format_entry("[WORKOUT]", user, f"completed {workout} ({duration})", notes)
+    with open(WORKOUT_LOG, "a", encoding="utf-8") as f:
+        f.write(entry)
+    print(f"[NUTRITION] Logged workout: {entry.strip()}")
 
-# ==============================
-# Summaries
-# ==============================
-def daily_summary(user: str):
-    """Return today's calorie intake and compare to targets."""
-    today = datetime.utcnow().date().isoformat()
-    meals = [m for m in read_meals() if m["user"] == user and m["timestamp"].startswith(today)]
-    total = sum(m["calories"] for m in meals)
+# =========================
+# Edit functions
+# =========================
+def edit_log_entry(file: str, index: int, new_content: str) -> bool:
+    """
+    Edit a specific entry by line index (0-based).
+    Returns True if successful, False otherwise.
+    """
+    lines = _read_log(file)
+    if 0 <= index < len(lines):
+        timestamp = datetime.utcnow().isoformat()
+        lines[index] = f"{timestamp} {new_content}\n"
+        _write_log(file, lines)
+        print(f"[NUTRITION] Edited entry {index} in {file}: {new_content}")
+        return True
+    return False
 
-    targets = get_targets(user)
-    if not targets:
-        return f"Total today: {total} kcal. (No targets set)."
+def delete_log_entry(file: str, index: int) -> bool:
+    """
+    Delete a specific entry by line index (0-based).
+    Returns True if successful, False otherwise.
+    """
+    lines = _read_log(file)
+    if 0 <= index < len(lines):
+        removed = lines.pop(index)
+        _write_log(file, lines)
+        print(f"[NUTRITION] Deleted entry {index} in {file}: {removed.strip()}")
+        return True
+    return False
 
-    return (
-        f"Total today: {total} kcal | "
-        f"Maintenance target: {targets['maintenance']} kcal | "
-        f"Weightloss target: {targets['weightloss']} kcal"
-    )
+# =========================
+# Convenience wrappers
+# =========================
+def edit_calorie_entry(index: int, new_content: str) -> bool:
+    return edit_log_entry(CALORIE_LOG, index, f"[CALORIES] {new_content}")
+
+def delete_calorie_entry(index: int) -> bool:
+    return delete_log_entry(CALORIE_LOG, index)
+
+def edit_workout_entry(index: int, new_content: str) -> bool:
+    return edit_log_entry(WORKOUT_LOG, index, f"[WORKOUT] {new_content}")
+
+def delete_workout_entry(index: int) -> bool:
+    return delete_log_entry(WORKOUT_LOG, index)
