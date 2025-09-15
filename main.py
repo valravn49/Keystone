@@ -15,7 +15,7 @@ from logger import (
     append_conversation_log, append_ritual_log,
     log_cage_event, log_plug_event, log_service_event
 )
-from workouts import get_workout_routine, workout_summary, log_workout
+from workouts import get_workout_routine, workout_summary, get_day_label
 
 # ==============================
 # Load config.json
@@ -29,10 +29,9 @@ DM_ENABLED = config.get("dm_enabled", True)
 
 # Tracks state in memory
 state = {
-    "rotation_index": 0,
+    "rotation_index": 0,       # rotation for rituals and workouts
     "theme_index": 0,
     "last_theme_update": None,
-    "day_index": 0,   # workout rotation
 }
 
 # ==============================
@@ -184,28 +183,21 @@ async def post_to_family(message: str, sender=None):
                 break
 
 # ==============================
-# Scheduled Messages (LLM + Workouts)
+# Scheduled Messages (LLM-driven)
 # ==============================
 async def send_morning_message():
     rotation = get_today_rotation()
     theme = get_current_theme()
     lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
 
-    routine = get_workout_routine(state["day_index"], "morning")
-    workout_text = workout_summary(routine)
-
     lead_msg = await generate_llm_reply(
         sister=lead,
-        user_message=(
-            "Good morning message: include roles, theme, hygiene reminders, discipline check. "
-            "Also present today's workout:\n" + workout_text
-        ),
+        user_message="Good morning message: include roles, theme, hygiene reminders, and discipline check. Write 3–5 sentences.",
         theme=theme,
         role="lead"
     )
     await post_to_family(lead_msg, sender=lead)
     append_ritual_log(lead, "lead", theme, lead_msg)
-    log_workout("system", "morning", routine)
 
     for s in supports:
         if random.random() < 0.7:
@@ -231,29 +223,21 @@ async def send_morning_message():
             append_ritual_log(rest, "rest", theme, rest_reply)
 
     state["rotation_index"] += 1
-    print(f"[SCHEDULER] Morning message completed with {lead} as lead")
+    log_event(f"[SCHEDULER] Morning message completed with {lead} as lead")
 
 async def send_night_message():
     rotation = get_today_rotation()
     theme = get_current_theme()
     lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
 
-    routine = get_workout_routine(state["day_index"], "night")
-    workout_text = workout_summary(routine)
-
     lead_msg = await generate_llm_reply(
         sister=lead,
-        user_message=(
-            "Good night message: thank supporters, wish rest, ask reflection, remind about outfits, "
-            "wake-up discipline, and plug/service tasks. "
-            "Also present tonight's workout:\n" + workout_text
-        ),
+        user_message="Good night message: thank supporters, wish rest, ask reflection, remind about outfits, wake-up discipline, and plug/service tasks. Write 3–5 sentences.",
         theme=theme,
         role="lead"
     )
     await post_to_family(lead_msg, sender=lead)
     append_ritual_log(lead, "lead", theme, lead_msg)
-    log_workout("system", "night", routine)
 
     for s in supports:
         if random.random() < 0.6:
@@ -278,9 +262,7 @@ async def send_night_message():
             await post_to_family(rest_reply, sender=rest)
             append_ritual_log(rest, "rest", theme, rest_reply)
 
-    # Advance workout day (4-day cycle)
-    state["day_index"] = (state["day_index"] + 1) % 4
-    print(f"[SCHEDULER] Night message completed with {lead} as lead")
+    log_event(f"[SCHEDULER] Night message completed with {lead} as lead")
 
 # ==============================
 # Aria Slash Commands
@@ -297,19 +279,32 @@ if aria_bot:
             f"🔄 Rotation advanced. New lead: **{rotation['lead']}**"
         )
 
-    @tree.command(name="force-morning", description="Force the morning message (with workout)")
+    @tree.command(name="force-morning", description="Force the morning message")
     async def slash_force_morning(interaction: discord.Interaction):
         await send_morning_message()
-        routine = get_workout_routine(state["day_index"], "morning")
-        workout_text = workout_summary(routine)
-        await interaction.response.send_message(f"☀️ Morning message forced.\n\n**Workout:**\n{workout_text}")
+        await interaction.response.send_message("☀️ Morning message forced.")
 
-    @tree.command(name="force-night", description="Force the night message (with workout)")
+    @tree.command(name="force-night", description="Force the night message")
     async def slash_force_night(interaction: discord.Interaction):
         await send_night_message()
-        routine = get_workout_routine(state["day_index"], "night")
-        workout_text = workout_summary(routine)
-        await interaction.response.send_message(f"🌙 Night message forced.\n\n**Workout:**\n{workout_text}")
+        await interaction.response.send_message("🌙 Night message forced.")
+
+    # Workout command
+    @tree.command(name="workout-today", description="Show today's morning and night workout")
+    async def slash_workout_today(interaction: discord.Interaction):
+        day_index = state["rotation_index"] % 4
+        day_label = get_day_label(day_index)
+        morning_routine = get_workout_routine(day_index, "morning")
+        night_routine = get_workout_routine(day_index, "night")
+
+        morning_msg = workout_summary(morning_routine)
+        night_msg = workout_summary(night_routine)
+
+        await interaction.response.send_message(
+            f"🏋️ **Today's Workout: {day_label}**\n\n"
+            f"☀️ Morning:\n{morning_msg}\n\n"
+            f"🌙 Night:\n{night_msg}"
+        )
 
     # Structured logs
     @tree.command(name="log-cage", description="Log a cage status update")
@@ -377,13 +372,9 @@ async def force_rotate():
 @app.post("/force-morning")
 async def force_morning():
     await send_morning_message()
-    routine = get_workout_routine(state["day_index"], "morning")
-    workout_text = workout_summary(routine)
-    return {"status": "morning message forced", "workout": workout_text}
+    return {"status": "morning message forced"}
 
 @app.post("/force-night")
 async def force_night():
     await send_night_message()
-    routine = get_workout_routine(state["day_index"], "night")
-    workout_text = workout_summary(routine)
-    return {"status": "night message forced", "workout": workout_text}
+    return {"status": "night message forced"}
