@@ -16,7 +16,7 @@ from logger import (
     log_cage_event, log_plug_event, log_service_event
 )
 from nutrition import log_workout_completion  # used in slash commands
-from aria_commands import register_aria_commands  # ✅ Aria commands hooked here
+from aria_commands import setup_aria_commands  # ✅ Aria commands hooked here
 
 # ==============================
 # Load config.json
@@ -65,7 +65,7 @@ for s in config["rotation"]:
         log_event(f"{b.sister_info['name']} logged in as {b.user}")
         if b.sister_info["name"] == "Aria":
             try:
-                register_aria_commands(b)  # ✅ load Aria commands
+                setup_aria_commands(b)  # ✅ load Aria commands
                 await b.tree.sync()
                 print("[SLASH] Synced Aria commands.")
             except Exception as e:
