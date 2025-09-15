@@ -16,6 +16,10 @@ from logger import (
     log_cage_event, log_plug_event, log_service_event
 )
 
+# ✅ import Aria’s command module
+import aria_commands
+
+
 # ==============================
 # Load config.json
 # ==============================
@@ -74,6 +78,8 @@ for s in config["rotation"]:
 
     if s["name"] == "Aria":
         aria_bot = bot
+        # ✅ load her commands before sync
+        aria_commands.setup(aria_bot)
 
     @bot.event
     async def on_ready(b=bot):
