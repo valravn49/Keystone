@@ -92,6 +92,9 @@ def evolve_personality(sister_info, event_type="interaction"):
 sisters = []
 aria_bot = None
 
+# Keep track of last visible chat message in the family channel
+last_family_message = {"author": None, "content": None}
+
 for s in config["rotation"]:
     token = os.getenv(s["env_var"])
     if not token:
@@ -123,75 +126,82 @@ for s in config["rotation"]:
 
     @bot.event
     async def on_message(message, b=bot):
+        global last_family_message
+
         if message.author == b.user:
             return
 
-        # DMs
+        # --- DM Handling ---
         if isinstance(message.channel, discord.DMChannel):
             if not DM_ENABLED:
                 return
+            name = b.sister_info["name"]
             try:
                 reply = await generate_llm_reply(
-                    sister=b.sister_info["name"],
+                    sister=name,
                     user_message=message.content,
                     theme=get_current_theme(),
-                    role="dm"
+                    role="dm",
+                    last_message=None  # DMs don’t need conversation context
                 )
                 if reply:
                     await message.channel.send(reply)
+                    log_event(f"[DM] {name} replied to {message.author}: {reply}")
                     append_conversation_log(
-                        sister=b.sister_info["name"],
-                        role="dm",
-                        theme=get_current_theme(),
-                        user_message=message.content,
-                        content=reply
+                        sister=name, role="dm", theme=get_current_theme(),
+                        user_message=message.content, content=reply
                     )
-                    evolve_personality(b.sister_info, event_type="dm")
             except Exception as e:
-                log_event(f"[ERROR] DM reply failed: {e}")
+                print(f"[ERROR] DM reply failed for {name}: {e}")
             return
 
+        # --- Family Channel Handling ---
         if message.channel.id != FAMILY_CHANNEL_ID:
             return
-        if message.content.startswith(("🌅", "🌙")):
+        if message.content.startswith("🌅") or message.content.startswith("🌙"):
             return
 
-        role = None
-        should_reply = False
+        # Update last visible family message (for conversational context)
+        last_family_message = {
+            "author": str(message.author),
+            "content": message.content
+        }
+
+        name = b.sister_info["name"]
         rotation = get_today_rotation()
-        if b.sister_info["name"] == rotation["lead"]:
-            role = "lead"; should_reply = True
-        elif b.sister_info["name"] in rotation["supports"]:
-            role = "support"; should_reply = random.random() < 0.6
-        elif b.sister_info["name"] == rotation["rest"]:
-            role = "rest"; should_reply = random.random() < 0.2
+        role, should_reply = None, False
+
+        if name == rotation["lead"]:
+            role, should_reply = "lead", True
+        elif name in rotation["supports"]:
+            role, should_reply = "support", random.random() < 0.6
+        elif name == rotation["rest"]:
+            role, should_reply = "rest", random.random() < 0.2
 
         if should_reply and role:
             style_hint = {
-                "lead": "2–4 sentences, guiding the conversation.",
-                "support": "1–2 sentences, playful or supportive.",
-                "rest": "Very brief, 1 phrase."
+                "lead": "Reply in 2–4 sentences, guiding the conversation.",
+                "support": "Reply in 1–2 sentences, playful or supportive.",
+                "rest": "Reply very briefly, 1 short sentence or phrase."
             }[role]
+
             try:
                 reply = await generate_llm_reply(
-                    sister=b.sister_info["name"],
-                    user_message=message.content + f"\n{style_hint}",
+                    sister=name,
+                    user_message=f"{message.author}: {message.content}\n{style_hint}",
                     theme=get_current_theme(),
-                    role=role
+                    role=role,
+                    last_message=last_family_message["content"]
                 )
                 if reply:
                     await message.channel.send(reply)
+                    log_event(f"{name} replied as {role} to {message.author}: {reply}")
                     append_conversation_log(
-                        sister=b.sister_info["name"],
-                        role=role,
-                        theme=get_current_theme(),
-                        user_message=message.content,
-                        content=reply
+                        sister=name, role=role, theme=get_current_theme(),
+                        user_message=message.content, content=reply
                     )
-                    evolve_personality(b.sister_info, event_type="interaction")
             except Exception as e:
-                log_event(f"[ERROR] LLM reply failed: {e}")
-
+                print(f"[ERROR] LLM reply failed for {name}: {e}")
 # ==============================
 # Rotation + Theme Helpers
 # ==============================
