@@ -1,94 +1,88 @@
-# workouts.py
-import json
+# nutrition.py
 import os
+import json
 from datetime import datetime
+from workouts import validate_workout, calculate_calories_burned
 
-# ==============================
-# Data Setup
-# ==============================
-WORKOUTS = {
-    "running": 10,        # kcal per minute
-    "cycling": 8,
-    "swimming": 11,
-    "yoga": 4,
-    "weightlifting": 6,
-    "walking": 5,
-    "rowing": 9
+DATA_FILE = os.path.join("data", "nutrition_data.json")
+
+data = {
+    "food_log": [],
+    "workout_log": [],
+    "targets": {"weight_loss": 1800, "maintenance": 2200}
 }
-
-DATA_FILE = "workouts_data.json"
-workout_log = []  # list of dicts {user, workout, duration, calories, time}
-
-
-# ==============================
-# Internal Persistence Helpers
-# ==============================
-def _save_data():
-    """Write the workout log to disk."""
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(workout_log, f, default=str)
 
 
 def _load_data():
-    """Load workout log from disk if available."""
-    global workout_log
+    global data
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            try:
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                workout_log = [
-                    {**e, "time": datetime.fromisoformat(e["time"])}
-                    for e in data
-                ]
-            except Exception:
-                workout_log = []
+        except Exception:
+            data = {
+                "food_log": [],
+                "workout_log": [],
+                "targets": {"weight_loss": 1800, "maintenance": 2200}
+            }
 
 
-# Load existing logs on startup
-_load_data()
+def _save_data():
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
 
 
-# ==============================
-# Core Functions
-# ==============================
-def validate_workout(name: str) -> bool:
-    """Check if the workout is in the known list."""
-    return name.lower() in WORKOUTS
-
-
-def calculate_calories_burned(name: str, duration: int) -> int:
-    """Return calories burned for a workout given minutes."""
-    name = name.lower()
-    if name not in WORKOUTS:
-        raise ValueError(f"Unknown workout: {name}")
-    return WORKOUTS[name] * duration
-
-
-def log_workout(user: str, workout_name: str, duration: int) -> dict:
-    """Log a workout entry and persist it separately from nutrition."""
-    calories = calculate_calories_burned(workout_name, duration)
+def log_food_entry(user: str, food: str, calories: int):
     entry = {
+        "timestamp": datetime.now().isoformat(),
         "user": user,
-        "workout": workout_name,
-        "duration": duration,
-        "calories": calories,
-        "time": datetime.now()
+        "food": food,
+        "calories": calories
     }
-    workout_log.append(entry)
+    data["food_log"].append(entry)
     _save_data()
     return entry
 
 
-def get_workout_summary() -> str:
-    """Return today’s workout summary from this module only."""
-    today = datetime.now().date()
-    total_sessions = sum(1 for e in workout_log if e["time"].date() == today)
-    total_minutes = sum(e["duration"] for e in workout_log if e["time"].date() == today)
-    total_burn = sum(e["calories"] for e in workout_log if e["time"].date() == today)
+def log_workout_completion(user: str, workout_name: str, duration: int):
+    if not validate_workout(workout_name):
+        raise ValueError(f"Unknown workout: {workout_name}")
+    calories_burned = calculate_calories_burned(workout_name, duration)
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "user": user,
+        "workout": workout_name,
+        "duration": duration,
+        "calories": calories_burned
+    }
+    data["workout_log"].append(entry)
+    _save_data()
+    return calories_burned
 
-    return (
-        f"🏋️ **Workout Summary (Today)**\n"
-        f"- Sessions: {total_sessions}\n"
-        f"- Total Duration: {total_minutes} mins\n"
-        f"- Total Calories Burned: {total_burn} kcal"
+
+def set_calorie_targets(weight_loss: int, maintenance: int):
+    data["targets"] = {"weight_loss": weight_loss, "maintenance": maintenance}
+    _save_data()
+
+
+def get_daily_summary():
+    today = datetime.now().date()
+    food_today = [f for f in data["food_log"] if datetime.fromisoformat(f["timestamp"]).date() == today]
+    workout_today = [w for w in data["workout_log"] if datetime.fromisoformat(w["timestamp"]).date() == today]
+
+    total_food = sum(f["calories"] for f in food_today)
+    total_burned = sum(w["calories"] for w in workout_today)
+    net = total_food - total_burned
+
+    summary = (
+        f"📊 Daily Summary for {today}:\n"
+        f"- Calories Consumed: {total_food}\n"
+        f"- Calories Burned: {total_burned}\n"
+        f"- Net Calories: {net}\n"
+        f"- Targets → Loss: {data['targets']['weight_loss']}, Maintenance: {data['targets']['maintenance']}"
     )
+    return summary
+
+
+# Ensure data file is loaded at startup
+_load_data()
