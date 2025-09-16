@@ -1,28 +1,22 @@
 import os
 import json
-import random
 import discord
 import asyncio
 from discord.ext import commands
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from datetime import datetime
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 from collections import deque
-import time
 
-from llm import generate_llm_reply   # Your LLM helper
-from logger import (
-    log_event, LOG_FILE,
-    append_conversation_log, append_ritual_log,
-    log_cage_event, log_plug_event, log_service_event
-)
-
-# ✅ import Aria’s command definitions
+from logger import log_event, LOG_FILE
 import aria_commands
-# ✅ import data manager for flexible logging
-from data_manager import parse_data_command
-
+from sisters_behavior import (
+    handle_sister_message,
+    send_morning_message,
+    send_night_message,
+    get_today_rotation,
+    get_current_theme
+)
 
 # ==============================
 # Load config.json
@@ -33,7 +27,6 @@ with open("config.json", "r") as f:
 FAMILY_CHANNEL_ID = config["family_group_channel"]
 THEMES = config["themes"]
 DM_ENABLED = config.get("dm_enabled", True)
-SUPPORT_LOG_COMMENTS = config.get("support_log_comments", True)
 
 # ==============================
 # Tracks state in memory
@@ -46,22 +39,6 @@ state = {
     "last_reply_time": {},    # channel_id → datetime
     "message_counts": {}      # channel_id → deque of timestamps
 }
-
-HISTORY_LIMIT = 6   # keep last 6 messages
-COOLDOWN_SECONDS = 10  # cooldown between replies per channel
-MESSAGE_LIMIT = 5      # max replies
-MESSAGE_WINDOW = 60    # time window in seconds
-
-
-def add_to_history(channel_id, author, content):
-    """Append a message to the rolling conversation history for a channel."""
-    if channel_id not in state["history"]:
-        state["history"][channel_id] = []
-    state["history"][channel_id].append((author, content))
-    # trim buffer
-    if len(state["history"][channel_id]) > HISTORY_LIMIT:
-        state["history"][channel_id] = state["history"][channel_id][-HISTORY_LIMIT:]
-
 
 # ==============================
 # Setup Sister Bots
@@ -86,14 +63,13 @@ for s in config["rotation"]:
 
     if s["name"] == "Aria":
         aria_bot = bot
-        # ✅ load her slash commands here
         aria_commands.setup_aria_commands(
             aria_bot.tree,
             state,
-            lambda: get_today_rotation(),
-            lambda: get_current_theme(),
-            lambda: asyncio.create_task(send_morning_message()),
-            lambda: asyncio.create_task(send_night_message())
+            lambda: get_today_rotation(state, config),
+            lambda: get_current_theme(state, config),
+            lambda: asyncio.create_task(send_morning_message(state, config, sisters)),
+            lambda: asyncio.create_task(send_night_message(state, config, sisters))
         )
 
     @bot.event
@@ -109,69 +85,67 @@ for s in config["rotation"]:
 
     @bot.event
     async def on_message(message, b=bot):
-        if message.author == b.user:
-            return
+        await handle_sister_message(b, message, state, config, sisters)
 
-        content = message.content.lower()
+# ==============================
+# FastAPI App
+# ==============================
+app = FastAPI()
 
-        # --- Determine which sister is being addressed ---
-        sister_name = None
-        for s in config["rotation"]:
-            if s["name"].lower() in content:
-                sister_name = s["name"]
-                break
+@app.on_event("startup")
+async def startup_event():
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(lambda: send_morning_message(state, config, sisters), "cron", hour=6, minute=0)
+    scheduler.add_job(lambda: send_night_message(state, config, sisters), "cron", hour=22, minute=0)
+    scheduler.start()
 
-        rotation = get_today_rotation()
-        if not sister_name:
-            sister_name = rotation["lead"]
+    for s in sisters:
+        asyncio.create_task(s.start(s.token))
+    log_event("[SYSTEM] Bots started with scheduler active.")
 
-        # --- Logging/Reading requests ---
-        handled, response, recall = parse_data_command(str(message.author), message.content)
-        if handled and b.sister_info["name"] == sister_name:
-            # Step 1: confirm the action
-            await message.channel.send(response)
 
-            # Step 2: natural persona reply from the addressed sister
-            try:
-                history = state["history"].get(message.channel.id, [])
-                style_hint = "Reply warmly in your own style after completing the request."
-                if recall:
-                    style_hint += f" Mention that the last log entry was: {recall}"
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
-                reply = await generate_llm_reply(
-                    sister=sister_name,
-                    user_message=f"{message.author}: {message.content}\n{style_hint}",
-                    theme=get_current_theme(),
-                    role="lead" if sister_name == rotation["lead"] else "support",
-                    history=history
-                )
-                if reply:
-                    await message.channel.send(reply)
-            except Exception as e:
-                print(f"[ERROR] LLM reply after data log failed: {e}")
 
-            # Step 3: allow ONE support comment (if enabled)
-            if SUPPORT_LOG_COMMENTS:
-                supports = rotation["supports"]
-                if supports:
-                    chosen_support = random.choice(supports)
-                    if chosen_support != sister_name:
-                        for bot_instance in sisters:
-                            if bot_instance.sister_info["name"] == chosen_support:
-                                try:
-                                    support_reply = await generate_llm_reply(
-                                        sister=chosen_support,
-                                        user_message=f"{message.author}: {message.content}\nShort playful supportive comment only, 1 sentence.",
-                                        theme=get_current_theme(),
-                                        role="support",
-                                        history=history
-                                    )
-                                    if support_reply:
-                                        await message.channel.send(support_reply)
-                                except Exception as e:
-                                    print(f"[ERROR] Support reply failed: {e}")
-                                break
-            return
+@app.get("/status")
+async def status():
+    rotation = get_today_rotation(state, config)
+    theme = get_current_theme(state, config)
+    return {
+        "bots": [s.sister_info["name"] for s in sisters],
+        "ready": [s.sister_info["name"] for s in sisters if s.is_ready()],
+        "rotation": rotation,
+        "theme": theme,
+    }
 
-        # --- Otherwise continue with normal cooldown/rotation logic ---
-        # (your lead/support/rest chat handling with cooldowns/quotas)
+
+@app.get("/logs", response_class=PlainTextResponse)
+async def get_logs(lines: int = 50):
+    try:
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            all_lines = f.readlines()
+        return "".join(all_lines[-lines:])
+    except FileNotFoundError:
+        return "[LOGGER] No memory_log.txt found."
+
+
+@app.post("/force-rotate")
+async def force_rotate():
+    state["rotation_index"] += 1
+    rotation = get_today_rotation(state, config)
+    log_event(f"Rotation manually advanced. New lead: {rotation['lead']}")
+    return {"status": "rotation advanced", "new_lead": rotation["lead"]}
+
+
+@app.post("/force-morning")
+async def force_morning():
+    await send_morning_message(state, config, sisters)
+    return {"status": "morning message forced"}
+
+
+@app.post("/force-night")
+async def force_night():
+    await send_night_message(state, config, sisters)
+    return {"status": "night message forced"}
