@@ -1,4 +1,3 @@
-# sisters_behavior.py
 import random
 import time
 from datetime import datetime
@@ -7,8 +6,6 @@ from llm import generate_llm_reply
 from logger import log_event, append_conversation_log, append_ritual_log
 from data_manager import parse_data_command
 
-
-# Conversation constants
 HISTORY_LIMIT = 6
 COOLDOWN_SECONDS = 10
 MESSAGE_LIMIT = 5
@@ -40,7 +37,6 @@ def get_current_theme(state, config):
 
 
 async def post_to_family(message: str, sender, sisters, config):
-    """Send a message into the family channel from a specific sister."""
     for bot in sisters:
         if bot.is_ready():
             if not sender or bot.sister_info["name"] == sender:
@@ -57,7 +53,6 @@ async def post_to_family(message: str, sender, sisters, config):
 
 
 async def handle_sister_message(bot, message, state, config, sisters):
-    """Handles all sister chat behavior: logging + conversation."""
     if message.author == bot.user:
         return
 
@@ -65,18 +60,17 @@ async def handle_sister_message(bot, message, state, config, sisters):
     content_lower = message.content.lower()
     now = datetime.now()
 
-    # Ignore outside family channel
     if message.channel.id != config["family_group_channel"]:
         return
     if message.content.startswith("🌅") or message.content.startswith("🌙"):
         return
 
-    # Cooldown check
+    # Cooldown
     last = state["last_reply_time"].get(channel_id)
     if last and (now - last).total_seconds() < COOLDOWN_SECONDS:
         return
 
-    # Quota check
+    # Quota
     counts = state["message_counts"].setdefault(channel_id, [])
     now_ts = time.time()
     counts = [t for t in counts if now_ts - t <= MESSAGE_WINDOW]
@@ -97,9 +91,7 @@ async def handle_sister_message(bot, message, state, config, sisters):
     if not addressed_sister:
         addressed_sister = rotation["lead"]
 
-    # --------------------------
     # Natural-language logging
-    # --------------------------
     handled, response, recall = parse_data_command(str(message.author), message.content)
     if handled and bot.sister_info["name"] == addressed_sister:
         await message.channel.send(response)
@@ -118,7 +110,7 @@ async def handle_sister_message(bot, message, state, config, sisters):
         if reply:
             await message.channel.send(reply)
 
-        # Optional support comment
+        # 1+1 rule: only one support
         if config.get("log_support_comments", True) and rotation["supports"]:
             chosen_support = random.choice(rotation["supports"])
             if chosen_support != addressed_sister:
@@ -136,9 +128,7 @@ async def handle_sister_message(bot, message, state, config, sisters):
                         break
         return
 
-    # --------------------------
     # Normal conversation
-    # --------------------------
     name = bot.sister_info["name"]
     role = None
     should_reply = False
@@ -150,17 +140,16 @@ async def handle_sister_message(bot, message, state, config, sisters):
         role = "rest"; should_reply = random.random() < 0.2
 
     if should_reply and role:
-        if role == "lead":
-            style_hint = "Reply in 2–4 sentences, guiding the conversation."
-        elif role == "support":
-            style_hint = "Reply in 1–2 sentences, playful or supportive."
-        else:
-            style_hint = "Reply briefly, 1 short remark."
-
         if not history:
             return
         weights = list(range(len(history), 0, -1))
         author, content = random.choices(history, weights=weights, k=1)[0]
+
+        style_hint = {
+            "lead": "Reply in 2–4 sentences, guiding the conversation.",
+            "support": "Reply in 1–2 sentences, playful or supportive.",
+            "rest": "Reply briefly, 1 short remark."
+        }[role]
 
         reply = await generate_llm_reply(
             sister=name,
@@ -183,9 +172,7 @@ async def handle_sister_message(bot, message, state, config, sisters):
             counts.append(now_ts)
 
 
-# ==============================
-# Ritual Messages
-# ==============================
+# Rituals
 async def send_morning_message(state, config, sisters):
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
@@ -271,3 +258,67 @@ async def send_night_message(state, config, sisters):
             append_ritual_log(rest, "rest", theme, rest_reply)
 
     log_event(f"[SCHEDULER] Night message completed with {lead} as lead")
+
+
+# Spontaneous tasks (1/day, 1+1 rule, logged with [SPONTANEOUS])
+async def send_spontaneous_task(state, config, sisters):
+    if not config.get("spontaneous_chat", {}).get("enabled", False):
+        return
+
+    today = datetime.now().date()
+    if state.get("last_task_date") == today:
+        return
+
+    if random.random() > config["spontaneous_chat"].get("reply_chance", 0.8):
+        return
+
+    rotation = get_today_rotation(state, config)
+    theme = get_current_theme(state, config)
+
+    if random.random() < config["spontaneous_chat"].get("starter_bias", 0.5):
+        sister_name = rotation["lead"]
+    else:
+        sister_name = random.choice([s["name"] for s in config["rotation"]])["name"]
+
+    task_prompt = (
+        "Assign the user a spontaneous task in your own style. "
+        "It can involve plug use, chastity checks, training, humiliation, or service. "
+        "Write 1–3 sentences, staying true to your personality."
+    )
+
+    reply = await generate_llm_reply(
+        sister=sister_name,
+        user_message=task_prompt,
+        theme=theme,
+        role="lead",
+        history=[]
+    )
+
+    if not reply:
+        return
+
+    await post_to_family(reply, sender=sister_name, sisters=sisters, config=config)
+    log_event(f"[TASK] {sister_name} issued task: {reply}")
+
+    # ✅ Log with [SPONTANEOUS] tag
+    parse_data_command(sister_name, "[SPONTANEOUS] " + reply)
+
+    # ✅ 1+1 rule: allow one support
+    if config.get("log_support_comments", True) and rotation["supports"]:
+        chosen_support = random.choice(rotation["supports"])
+        if chosen_support != sister_name:
+            for bot_instance in sisters:
+                if bot_instance.sister_info["name"] == chosen_support:
+                    support_reply = await generate_llm_reply(
+                        sister=chosen_support,
+                        user_message="React playfully or supportively to the spontaneous task just given. 1 short line only.",
+                        theme=theme,
+                        role="support",
+                        history=[]
+                    )
+                    if support_reply:
+                        await post_to_family(support_reply, sender=chosen_support, sisters=sisters, config=config)
+                        log_event(f"[TASK-SUPPORT] {chosen_support} added support: {support_reply}")
+                    break
+
+    state["last_task_date"] = today
