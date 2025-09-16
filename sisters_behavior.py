@@ -1,10 +1,16 @@
 import random
 import time
-from datetime import datetime
+import re
+import asyncio
+from datetime import datetime, timedelta
 
 from llm import generate_llm_reply
 from logger import log_event, append_conversation_log, append_ritual_log
-from data_manager import parse_data_command
+from data_manager import (
+    parse_data_command,
+    read_chastity, read_plug, read_anal, read_oral, read_training, read_denial,
+    cross_file_summary,  # new helper in data_manager
+)
 
 HISTORY_LIMIT = 6
 COOLDOWN_SECONDS = 10
@@ -30,10 +36,10 @@ def get_today_rotation(state, config):
 
 def get_current_theme(state, config):
     today = datetime.now().date()
-    if state["last_theme_update"] is None or (today.weekday() == 0 and state["last_theme_update"] != today):
-        state["theme_index"] = (state["theme_index"] + 1) % len(config["themes"])
+    if state.get("last_theme_update") is None or (today.weekday() == 0 and state.get("last_theme_update") != today):
+        state["theme_index"] = (state.get("theme_index", 0) + 1) % len(config["themes"])
         state["last_theme_update"] = today
-    return config["themes"][state["theme_index"]]
+    return config["themes"][state.get("theme_index", 0)]
 
 
 async def post_to_family(message: str, sender, sisters, config):
@@ -52,6 +58,57 @@ async def post_to_family(message: str, sender, sisters, config):
                 break
 
 
+# ---------- Duration extraction ----------
+_DURATION_REGEX = re.compile(r"(\d+)\s*(hours|hour|hrs|hr|h|minutes|minute|mins|min|m)\b", re.I)
+
+def _extract_duration_seconds(text: str):
+    """
+    Look for the first duration in text, return seconds or None.
+    Supports hours and minutes.
+    """
+    m = _DURATION_REGEX.search(text)
+    if not m:
+        return None
+    val = int(m.group(1))
+    unit = m.group(2).lower()
+    if unit.startswith("h"):
+        return val * 3600
+    # minutes
+    return val * 60
+
+def _remove_duration_phrases(text: str):
+    """Remove duration phrases so the user isn't told the duration"""
+    return _DURATION_REGEX.sub("", text).strip()
+
+
+async def _schedule_spontaneous_end(state, sisters, config, sister_name, original_reply, duration_seconds):
+    """
+    Schedule a notification by sister_name after duration_seconds.
+    The notification should not reveal the duration; it simply informs the user the task is over.
+    """
+    try:
+        # create an asyncio task that waits then posts
+        async def _wait_and_notify():
+            try:
+                await asyncio.sleep(duration_seconds)
+                end_msg = f"{sister_name}: The task I assigned earlier is complete. You may proceed as instructed."
+                # post as sister
+                await post_to_family(end_msg, sender=sister_name, sisters=sisters, config=config)
+                log_event(f"[TASK-END] {sister_name} notified task end (hidden duration).")
+            except asyncio.CancelledError:
+                log_event(f"[TASK-END] Cancelled end notification for {sister_name}.")
+            except Exception as e:
+                log_event(f"[TASK-END] Error notifying end: {e}")
+
+        t = asyncio.create_task(_wait_and_notify())
+        # store so it can be inspected/cancelled if desired
+        key = f"{datetime.now().date().isoformat()}_{sister_name}"
+        state.setdefault("spontaneous_end_tasks", {})[key] = t
+    except Exception as e:
+        log_event(f"[SCHEDULER] Failed to schedule end notification: {e}")
+
+
+# ---------- Main handler ----------
 async def handle_sister_message(bot, message, state, config, sisters):
     if message.author == bot.user:
         return
@@ -77,12 +134,14 @@ async def handle_sister_message(bot, message, state, config, sisters):
     if len(counts) >= MESSAGE_LIMIT:
         state["message_counts"][channel_id] = counts
         return
-
     state["message_counts"][channel_id] = counts
+
     add_to_history(state, channel_id, str(message.author), message.content)
     history = state["history"].get(channel_id, [])
 
     rotation = get_today_rotation(state, config)
+
+    # Determine addressed sister or default lead
     addressed_sister = None
     for s in config["rotation"]:
         if s["name"].lower() in content_lower:
@@ -90,6 +149,31 @@ async def handle_sister_message(bot, message, state, config, sisters):
             break
     if not addressed_sister:
         addressed_sister = rotation["lead"]
+
+    # -------- Cross-file summary request (named sister or lead) ----------
+    # Trigger words: summary / aggregate / cross-file / daily summary
+    if any(k in content_lower for k in ["summary", "cross-file", "aggregate", "daily summary", "cross file"]):
+        # Only have the addressed sister respond
+        if bot.sister_info["name"] == addressed_sister:
+            # optionally allow "last N days" parsing, default today
+            summary_text = cross_file_summary(str(message.author))
+            # let the sister add a short intro (persona) then the summary
+            style_hint = "Provide a brief intro in your voice, then paste the summary result."
+            try:
+                intro = await generate_llm_reply(
+                    sister=addressed_sister,
+                    user_message=f"{message.author}: Requesting cross-file summary.\n{style_hint}",
+                    theme=get_current_theme(state, config),
+                    role="lead" if addressed_sister == rotation["lead"] else "support",
+                    history=history
+                )
+                if intro:
+                    await message.channel.send(intro)
+            except Exception:
+                pass
+            # send the summary (plain)
+            await message.channel.send(summary_text)
+            return
 
     # Natural-language logging
     handled, response, recall = parse_data_command(str(message.author), message.content)
@@ -100,17 +184,20 @@ async def handle_sister_message(bot, message, state, config, sisters):
         if recall:
             style_hint += f" Mention that the last log entry was: {recall}"
 
-        reply = await generate_llm_reply(
-            sister=addressed_sister,
-            user_message=f"{message.author}: {message.content}\n{style_hint}",
-            theme=get_current_theme(state, config),
-            role="lead" if addressed_sister == rotation["lead"] else "support",
-            history=history
-        )
-        if reply:
-            await message.channel.send(reply)
+        try:
+            reply = await generate_llm_reply(
+                sister=addressed_sister,
+                user_message=f"{message.author}: {message.content}\n{style_hint}",
+                theme=get_current_theme(state, config),
+                role="lead" if addressed_sister == rotation["lead"] else "support",
+                history=history
+            )
+            if reply:
+                await message.channel.send(reply)
+        except Exception as e:
+            log_event(f"[ERROR] LLM reply after log failed: {e}")
 
-        # 1+1 rule: only one support
+        # 1+1 rule: only one support comment
         if config.get("log_support_comments", True) and rotation["supports"]:
             chosen_support = random.choice(rotation["supports"])
             if chosen_support != addressed_sister:
@@ -172,7 +259,7 @@ async def handle_sister_message(bot, message, state, config, sisters):
             counts.append(now_ts)
 
 
-# Rituals
+# ---------- Rituals ----------
 async def send_morning_message(state, config, sisters):
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
@@ -213,7 +300,7 @@ async def send_morning_message(state, config, sisters):
             await post_to_family(rest_reply, sender=rest, sisters=sisters, config=config)
             append_ritual_log(rest, "rest", theme, rest_reply)
 
-    state["rotation_index"] += 1
+    state["rotation_index"] = state.get("rotation_index", 0) + 1
     log_event(f"[SCHEDULER] Morning message completed with {lead} as lead")
 
 
@@ -260,7 +347,7 @@ async def send_night_message(state, config, sisters):
     log_event(f"[SCHEDULER] Night message completed with {lead} as lead")
 
 
-# Spontaneous tasks (1/day, 1+1 rule, logged with [SPONTANEOUS])
+# ---------- Spontaneous tasks (1/day, 1+1 rule, logged with [SPONTANEOUS], hidden duration) ----------
 async def send_spontaneous_task(state, config, sisters):
     if not config.get("spontaneous_chat", {}).get("enabled", False):
         return
@@ -269,21 +356,25 @@ async def send_spontaneous_task(state, config, sisters):
     if state.get("last_task_date") == today:
         return
 
+    # roll chance
     if random.random() > config["spontaneous_chat"].get("reply_chance", 0.8):
         return
 
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
 
+    # pick sister
     if random.random() < config["spontaneous_chat"].get("starter_bias", 0.5):
         sister_name = rotation["lead"]
     else:
-        sister_name = random.choice([s["name"] for s in config["rotation"]])["name"]
+        sister_name = random.choice([s["name"] for s in config["rotation"]])
 
+    # ask LLM to create a task; allow durations but we'll hide them
     task_prompt = (
         "Assign the user a spontaneous task in your own style. "
         "It can involve plug use, chastity checks, training, humiliation, or service. "
-        "Write 1–3 sentences, staying true to your personality."
+        "You may decide on a duration (e.g. 2 hours) but DO NOT reveal the duration in the posted message; "
+        "instead leave the duration implicit. Keep it 1–3 sentences."
     )
 
     reply = await generate_llm_reply(
@@ -297,13 +388,23 @@ async def send_spontaneous_task(state, config, sisters):
     if not reply:
         return
 
-    await post_to_family(reply, sender=sister_name, sisters=sisters, config=config)
-    log_event(f"[TASK] {sister_name} issued task: {reply}")
+    # Extract any duration mention (we treat it as internal). If LLM included an explicit numeric duration phrase we detect it.
+    duration_seconds = _extract_duration_seconds(reply)
+    # Remove any explicit duration text so the user does not see it
+    posted_reply = _remove_duration_phrases(reply) if duration_seconds else reply
 
-    # ✅ Log with [SPONTANEOUS] tag
+    # Post the (sanitized) message
+    await post_to_family(posted_reply, sender=sister_name, sisters=sisters, config=config)
+    log_event(f"[TASK] {sister_name} issued spontaneous task (posted sanitized): {posted_reply}")
+
+    # Log the original reply as spontaneous (we pass the original reply to preserve context)
     parse_data_command(sister_name, "[SPONTANEOUS] " + reply)
 
-    # ✅ 1+1 rule: allow one support
+    # Schedule end notification if duration detected
+    if duration_seconds:
+        await _schedule_spontaneous_end(state, sisters, config, sister_name, reply, duration_seconds)
+
+    # 1+1 support reply
     if config.get("log_support_comments", True) and rotation["supports"]:
         chosen_support = random.choice(rotation["supports"])
         if chosen_support != sister_name:
@@ -321,4 +422,5 @@ async def send_spontaneous_task(state, config, sisters):
                         log_event(f"[TASK-SUPPORT] {chosen_support} added support: {support_reply}")
                     break
 
+    # lock for today
     state["last_task_date"] = today
