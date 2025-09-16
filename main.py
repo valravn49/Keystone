@@ -14,6 +14,7 @@ from sisters_behavior import (
     handle_sister_message,
     send_morning_message,
     send_night_message,
+    send_spontaneous_task,
     get_today_rotation,
     get_current_theme
 )
@@ -37,7 +38,8 @@ state = {
     "last_theme_update": None,
     "history": {},            # channel_id → [(author, content), ...]
     "last_reply_time": {},    # channel_id → datetime
-    "message_counts": {}      # channel_id → deque of timestamps
+    "message_counts": {},     # channel_id → deque of timestamps
+    "last_task_date": None    # date of last spontaneous task
 }
 
 # ==============================
@@ -97,8 +99,11 @@ async def startup_event():
     scheduler = AsyncIOScheduler()
     scheduler.add_job(lambda: send_morning_message(state, config, sisters), "cron", hour=6, minute=0)
     scheduler.add_job(lambda: send_night_message(state, config, sisters), "cron", hour=22, minute=0)
-    scheduler.start()
 
+    # Spontaneous task checker (hourly)
+    scheduler.add_job(lambda: send_spontaneous_task(state, config, sisters), "cron", minute=0)
+
+    scheduler.start()
     for s in sisters:
         asyncio.create_task(s.start(s.token))
     log_event("[SYSTEM] Bots started with scheduler active.")
