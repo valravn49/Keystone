@@ -2,22 +2,47 @@ import random
 import time
 import re
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from llm import generate_llm_reply
 from logger import log_event, append_conversation_log, append_ritual_log
-from data_manager import (
-    parse_data_command,
-    read_chastity, read_plug, read_anal, read_oral, read_training, read_denial,
-    cross_file_summary,  # new helper in data_manager
-)
+from data_manager import parse_data_command, cross_file_summary
+
+# Stub integrations
+from bluetooth_integration import connect_device, disconnect_device, send_command, get_status
+from media_processing import process_image, process_video, anonymize_image, generate_progress_contact_sheet
 
 HISTORY_LIMIT = 6
 COOLDOWN_SECONDS = 10
 MESSAGE_LIMIT = 5
 MESSAGE_WINDOW = 60
 
+# Persona tone intros
+PERSONA_TONES = {
+    "Aria": {
+        "intro_morning": "Good morning — be gentle with yourself today; remember your duties and care.",
+        "intro_night": "Time to rest, sweet one. Reflect kindly on your progress.",
+        "intro_end": "That’s enough time. You can stop now, love."
+    },
+    "Selene": {  # motherly
+        "intro_morning": "Good morning, darling — take things slowly and be kind to your body today.",
+        "intro_night": "Sleep well, my dear. I’ve been thinking of your care and comfort.",
+        "intro_end": "Lovely — your time is up. Come relax and breathe."
+    },
+    "Cassandra": {
+        "intro_morning": "Morning. Be prepared, stay disciplined, and do not slack.",
+        "intro_night": "The day is done. Review your discipline and rest ready for tomorrow.",
+        "intro_end": "Discipline complete. You may end the task — because I allow it."
+    },
+    "Ivy": {
+        "intro_morning": "Wake up, sleepyhead~ Don’t dawdle or I’ll tease you all day.",
+        "intro_night": "Bedtime already? Tuck in, cutie — naughty dreams await.",
+        "intro_end": "Hehe~ done! Bet you squirmed — you can stop now 💕"
+    }
+}
 
+
+# ---------------- Helpers ----------------
 def add_to_history(state, channel_id, author, content):
     if channel_id not in state["history"]:
         state["history"][channel_id] = []
@@ -58,14 +83,10 @@ async def post_to_family(message: str, sender, sisters, config):
                 break
 
 
-# ---------- Duration extraction ----------
+# ---------------- Duration extraction ----------------
 _DURATION_REGEX = re.compile(r"(\d+)\s*(hours|hour|hrs|hr|h|minutes|minute|mins|min|m)\b", re.I)
 
 def _extract_duration_seconds(text: str):
-    """
-    Look for the first duration in text, return seconds or None.
-    Supports hours and minutes.
-    """
     m = _DURATION_REGEX.search(text)
     if not m:
         return None
@@ -73,42 +94,51 @@ def _extract_duration_seconds(text: str):
     unit = m.group(2).lower()
     if unit.startswith("h"):
         return val * 3600
-    # minutes
     return val * 60
 
 def _remove_duration_phrases(text: str):
-    """Remove duration phrases so the user isn't told the duration"""
     return _DURATION_REGEX.sub("", text).strip()
 
 
-async def _schedule_spontaneous_end(state, sisters, config, sister_name, original_reply, duration_seconds):
+async def _schedule_spontaneous_end(state, sisters, config, sister_name, duration_seconds):
     """
-    Schedule a notification by sister_name after duration_seconds.
-    The notification should not reveal the duration; it simply informs the user the task is over.
+    Persona-specific end notifications, mixing fixed persona line and LLM expansions.
     """
-    try:
-        # create an asyncio task that waits then posts
-        async def _wait_and_notify():
-            try:
-                await asyncio.sleep(duration_seconds)
-                end_msg = f"{sister_name}: The task I assigned earlier is complete. You may proceed as instructed."
-                # post as sister
-                await post_to_family(end_msg, sender=sister_name, sisters=sisters, config=config)
-                log_event(f"[TASK-END] {sister_name} notified task end (hidden duration).")
-            except asyncio.CancelledError:
-                log_event(f"[TASK-END] Cancelled end notification for {sister_name}.")
-            except Exception as e:
-                log_event(f"[TASK-END] Error notifying end: {e}")
+    async def _wait_and_notify():
+        try:
+            await asyncio.sleep(duration_seconds)
+            persona = PERSONA_TONES.get(sister_name, {})
+            intro = persona.get("intro_end", "Your task is complete. You may stop now.")
 
-        t = asyncio.create_task(_wait_and_notify())
-        # store so it can be inspected/cancelled if desired
-        key = f"{datetime.now().date().isoformat()}_{sister_name}"
-        state.setdefault("spontaneous_end_tasks", {})[key] = t
-    except Exception as e:
-        log_event(f"[SCHEDULER] Failed to schedule end notification: {e}")
+            if random.random() < 0.5:
+                line = intro
+            else:
+                try:
+                    expansion = await generate_llm_reply(
+                        sister=sister_name,
+                        user_message=f"{sister_name}: Expand this 1-line closing in your voice: \"{intro}\" Keep it 1 short sentence.",
+                        theme=None,
+                        role="lead",
+                        history=[]
+                    )
+                    line = expansion if expansion else intro
+                except Exception:
+                    line = intro
+
+            end_msg = f"{sister_name}: {line}"
+            await post_to_family(end_msg, sender=sister_name, sisters=sisters, config=config)
+            log_event(f"[TASK-END] {sister_name} notified task end (persona-mixed).")
+        except asyncio.CancelledError:
+            log_event(f"[TASK-END] Cancelled end notification for {sister_name}.")
+        except Exception as e:
+            log_event(f"[TASK-END] Error notifying end: {e}")
+
+    t = asyncio.create_task(_wait_and_notify())
+    key = f"{datetime.now().date().isoformat()}_{sister_name}"
+    state.setdefault("spontaneous_end_tasks", {})[key] = t
 
 
-# ---------- Main handler ----------
+# ---------------- Main handler ----------------
 async def handle_sister_message(bot, message, state, config, sisters):
     if message.author == bot.user:
         return
@@ -150,32 +180,39 @@ async def handle_sister_message(bot, message, state, config, sisters):
     if not addressed_sister:
         addressed_sister = rotation["lead"]
 
-    # -------- Cross-file summary request (named sister or lead) ----------
-    # Trigger words: summary / aggregate / cross-file / daily summary
+    # -------- Cross-file summary --------
     if any(k in content_lower for k in ["summary", "cross-file", "aggregate", "daily summary", "cross file"]):
-        # Only have the addressed sister respond
         if bot.sister_info["name"] == addressed_sister:
-            # optionally allow "last N days" parsing, default today
             summary_text = cross_file_summary(str(message.author))
-            # let the sister add a short intro (persona) then the summary
-            style_hint = "Provide a brief intro in your voice, then paste the summary result."
-            try:
-                intro = await generate_llm_reply(
-                    sister=addressed_sister,
-                    user_message=f"{message.author}: Requesting cross-file summary.\n{style_hint}",
-                    theme=get_current_theme(state, config),
-                    role="lead" if addressed_sister == rotation["lead"] else "support",
-                    history=history
-                )
-                if intro:
-                    await message.channel.send(intro)
-            except Exception:
-                pass
-            # send the summary (plain)
+            intro = await generate_llm_reply(
+                sister=addressed_sister,
+                user_message=f"{message.author}: Requesting cross-file summary.\nProvide a brief intro then the summary.",
+                theme=get_current_theme(state, config),
+                role="lead" if addressed_sister == rotation["lead"] else "support",
+                history=history
+            )
+            if intro:
+                await message.channel.send(intro)
             await message.channel.send(summary_text)
             return
 
-    # Natural-language logging
+    # -------- Bluetooth & Media stubs --------
+    if "bluetooth" in content_lower or "device" in content_lower:
+        if bot.sister_info["name"] == addressed_sister:
+            status = get_status("toy")
+            await message.channel.send(
+                f"{addressed_sister}: Pretend Bluetooth status → connected={status['connected']}, battery={status['battery']}"
+            )
+            return
+
+    if any(k in content_lower for k in ["image", "photo", "picture", "video"]):
+        if bot.sister_info["name"] == addressed_sister:
+            await message.channel.send(
+                f"{addressed_sister}: I can *pretend* to process media, but right now it’s just a placeholder."
+            )
+            return
+
+    # -------- Natural-language logging --------
     handled, response, recall = parse_data_command(str(message.author), message.content)
     if handled and bot.sister_info["name"] == addressed_sister:
         await message.channel.send(response)
@@ -184,20 +221,17 @@ async def handle_sister_message(bot, message, state, config, sisters):
         if recall:
             style_hint += f" Mention that the last log entry was: {recall}"
 
-        try:
-            reply = await generate_llm_reply(
-                sister=addressed_sister,
-                user_message=f"{message.author}: {message.content}\n{style_hint}",
-                theme=get_current_theme(state, config),
-                role="lead" if addressed_sister == rotation["lead"] else "support",
-                history=history
-            )
-            if reply:
-                await message.channel.send(reply)
-        except Exception as e:
-            log_event(f"[ERROR] LLM reply after log failed: {e}")
+        reply = await generate_llm_reply(
+            sister=addressed_sister,
+            user_message=f"{message.author}: {message.content}\n{style_hint}",
+            theme=get_current_theme(state, config),
+            role="lead" if addressed_sister == rotation["lead"] else "support",
+            history=history
+        )
+        if reply:
+            await message.channel.send(reply)
 
-        # 1+1 rule: only one support comment
+        # 1+1 rule
         if config.get("log_support_comments", True) and rotation["supports"]:
             chosen_support = random.choice(rotation["supports"])
             if chosen_support != addressed_sister:
@@ -215,7 +249,7 @@ async def handle_sister_message(bot, message, state, config, sisters):
                         break
         return
 
-    # Normal conversation
+    # -------- Normal conversation --------
     name = bot.sister_info["name"]
     role = None
     should_reply = False
@@ -259,19 +293,37 @@ async def handle_sister_message(bot, message, state, config, sisters):
             counts.append(now_ts)
 
 
-# ---------- Rituals ----------
+# ---------------- Rituals ----------------
 async def send_morning_message(state, config, sisters):
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
     lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
 
-    lead_msg = await generate_llm_reply(
-        sister=lead,
-        user_message="Good morning message: include roles, theme, hygiene reminders, and discipline check. Write 3–5 sentences.",
-        theme=theme,
-        role="lead",
-        history=[]
-    )
+    persona = PERSONA_TONES.get(lead, {})
+    intro = persona.get("intro_morning")
+
+    if intro:
+        try:
+            lead_msg = await generate_llm_reply(
+                sister=lead,
+                user_message=f"{lead}: Use this opening as your tone and expand into a 3-5 sentence morning message. \"{intro}\"",
+                theme=theme,
+                role="lead",
+                history=[]
+            )
+            if not lead_msg:
+                lead_msg = intro
+        except Exception:
+            lead_msg = intro
+    else:
+        lead_msg = await generate_llm_reply(
+            sister=lead,
+            user_message="Good morning message: include theme, hygiene reminders, and discipline check. Write 3–5 sentences.",
+            theme=theme,
+            role="lead",
+            history=[]
+        )
+
     await post_to_family(lead_msg, sender=lead, sisters=sisters, config=config)
     append_ritual_log(lead, "lead", theme, lead_msg)
 
@@ -309,13 +361,31 @@ async def send_night_message(state, config, sisters):
     theme = get_current_theme(state, config)
     lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
 
-    lead_msg = await generate_llm_reply(
-        sister=lead,
-        user_message="Good night message: thank supporters, wish rest, ask reflection, remind about outfits, wake-up discipline, and plug/service tasks. Write 3–5 sentences.",
-        theme=theme,
-        role="lead",
-        history=[]
-    )
+    persona = PERSONA_TONES.get(lead, {})
+    intro = persona.get("intro_night")
+
+    if intro:
+        try:
+            lead_msg = await generate_llm_reply(
+                sister=lead,
+                user_message=f"{lead}: Use this opening as your tone and expand into a 3-5 sentence night message. \"{intro}\"",
+                theme=theme,
+                role="lead",
+                history=[]
+            )
+            if not lead_msg:
+                lead_msg = intro
+        except Exception:
+            lead_msg = intro
+    else:
+        lead_msg = await generate_llm_reply(
+            sister=lead,
+            user_message="Good night message: thank supporters, ask reflection, remind about outfits, and plug/service tasks. Write 3–5 sentences.",
+            theme=theme,
+            role="lead",
+            history=[]
+        )
+
     await post_to_family(lead_msg, sender=lead, sisters=sisters, config=config)
     append_ritual_log(lead, "lead", theme, lead_msg)
 
@@ -347,7 +417,7 @@ async def send_night_message(state, config, sisters):
     log_event(f"[SCHEDULER] Night message completed with {lead} as lead")
 
 
-# ---------- Spontaneous tasks (1/day, 1+1 rule, logged with [SPONTANEOUS], hidden duration) ----------
+# ---------------- Spontaneous tasks ----------------
 async def send_spontaneous_task(state, config, sisters):
     if not config.get("spontaneous_chat", {}).get("enabled", False):
         return
@@ -356,25 +426,24 @@ async def send_spontaneous_task(state, config, sisters):
     if state.get("last_task_date") == today:
         return
 
-    # roll chance
     if random.random() > config["spontaneous_chat"].get("reply_chance", 0.8):
         return
 
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
 
-    # pick sister
     if random.random() < config["spontaneous_chat"].get("starter_bias", 0.5):
         sister_name = rotation["lead"]
     else:
         sister_name = random.choice([s["name"] for s in config["rotation"]])
 
-    # ask LLM to create a task; allow durations but we'll hide them
     task_prompt = (
         "Assign the user a spontaneous task in your own style. "
-        "It can involve plug use, chastity checks, training, humiliation, or service. "
-        "You may decide on a duration (e.g. 2 hours) but DO NOT reveal the duration in the posted message; "
-        "instead leave the duration implicit. Keep it 1–3 sentences."
+        "It can involve plug use, chastity checks, training, humiliation, service, "
+        "Bluetooth toy/device checks, or asking for a media proof task (image/video). "
+        "If you choose Bluetooth or media, phrase it naturally. "
+        "You may decide on a duration (e.g. 2 hours) but DO NOT reveal the duration in the posted message. "
+        "Keep it 1–3 sentences."
     )
 
     reply = await generate_llm_reply(
@@ -388,39 +457,10 @@ async def send_spontaneous_task(state, config, sisters):
     if not reply:
         return
 
-    # Extract any duration mention (we treat it as internal). If LLM included an explicit numeric duration phrase we detect it.
     duration_seconds = _extract_duration_seconds(reply)
-    # Remove any explicit duration text so the user does not see it
     posted_reply = _remove_duration_phrases(reply) if duration_seconds else reply
 
-    # Post the (sanitized) message
     await post_to_family(posted_reply, sender=sister_name, sisters=sisters, config=config)
-    log_event(f"[TASK] {sister_name} issued spontaneous task (posted sanitized): {posted_reply}")
+    log_event(f"[TASK] {sister_name} issued spontaneous task: {posted_reply}")
 
-    # Log the original reply as spontaneous (we pass the original reply to preserve context)
-    parse_data_command(sister_name, "[SPONTANEOUS] " + reply)
-
-    # Schedule end notification if duration detected
-    if duration_seconds:
-        await _schedule_spontaneous_end(state, sisters, config, sister_name, reply, duration_seconds)
-
-    # 1+1 support reply
-    if config.get("log_support_comments", True) and rotation["supports"]:
-        chosen_support = random.choice(rotation["supports"])
-        if chosen_support != sister_name:
-            for bot_instance in sisters:
-                if bot_instance.sister_info["name"] == chosen_support:
-                    support_reply = await generate_llm_reply(
-                        sister=chosen_support,
-                        user_message="React playfully or supportively to the spontaneous task just given. 1 short line only.",
-                        theme=theme,
-                        role="support",
-                        history=[]
-                    )
-                    if support_reply:
-                        await post_to_family(support_reply, sender=chosen_support, sisters=sisters, config=config)
-                        log_event(f"[TASK-SUPPORT] {chosen_support} added support: {support_reply}")
-                    break
-
-    # lock for today
-    state["last_task_date"] = today
+    parse_data_command(sister_name, "[SPONTANEOUS]
