@@ -7,6 +7,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 from collections import deque
+from datetime import datetime
 
 from logger import log_event, LOG_FILE
 import aria_commands
@@ -39,7 +40,9 @@ state = {
     "history": {},            # channel_id → [(author, content), ...]
     "last_reply_time": {},    # channel_id → datetime
     "message_counts": {},     # channel_id → deque of timestamps
-    "last_task_date": None    # date of last spontaneous task
+    "last_task_date": None,   # date of last spontaneous task
+    # store scheduled end-notifications so you can inspect/cancel if needed
+    "spontaneous_end_tasks": {}
 }
 
 # ==============================
@@ -87,6 +90,7 @@ for s in config["rotation"]:
 
     @bot.event
     async def on_message(message, b=bot):
+        # delegate all sister behaviour
         await handle_sister_message(b, message, state, config, sisters)
 
 # ==============================
@@ -105,6 +109,7 @@ async def startup_event():
 
     scheduler.start()
     for s in sisters:
+        # start discord clients
         asyncio.create_task(s.start(s.token))
     log_event("[SYSTEM] Bots started with scheduler active.")
 
@@ -123,6 +128,7 @@ async def status():
         "ready": [s.sister_info["name"] for s in sisters if s.is_ready()],
         "rotation": rotation,
         "theme": theme,
+        "last_task_date": str(state.get("last_task_date"))
     }
 
 
