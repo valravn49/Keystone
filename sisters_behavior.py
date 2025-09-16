@@ -101,9 +101,6 @@ def _remove_duration_phrases(text: str):
 
 
 async def _schedule_spontaneous_end(state, sisters, config, sister_name, duration_seconds):
-    """
-    Persona-specific end notifications, mixing fixed persona line and LLM expansions.
-    """
     async def _wait_and_notify():
         try:
             await asyncio.sleep(duration_seconds)
@@ -463,4 +460,12 @@ async def send_spontaneous_task(state, config, sisters):
     await post_to_family(posted_reply, sender=sister_name, sisters=sisters, config=config)
     log_event(f"[TASK] {sister_name} issued spontaneous task: {posted_reply}")
 
-    parse_data_command(sister_name, "[SPONTANEOUS]
+    # Log spontaneous task
+    parse_data_command(sister_name, f"[SPONTANEOUS] {posted_reply}")
+
+    # Schedule end notification if duration set
+    if duration_seconds:
+        await _schedule_spontaneous_end(state, sisters, config, sister_name, duration_seconds)
+
+    state["last_task_date"] = today
+    log_event(f"[TASK] {sister_name} spontaneous task logged.")
