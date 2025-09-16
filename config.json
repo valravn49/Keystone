@@ -43,5 +43,6 @@
     "max_minutes": 90,
     "reply_chance": 0.8,
     "starter_bias": 0.5
-  }
+  },
+  "log_support_comments": true
 }
