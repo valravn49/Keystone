@@ -1,13 +1,11 @@
 import os
 import json
-import discord
 import asyncio
+import discord
 from discord.ext import commands
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
-from collections import deque
-from datetime import datetime
 
 from logger import log_event, LOG_FILE
 import aria_commands
@@ -16,8 +14,6 @@ from sisters_behavior import (
     send_morning_message,
     send_night_message,
     send_spontaneous_task,
-    get_today_rotation,
-    get_current_theme
 )
 
 # ==============================
@@ -27,21 +23,19 @@ with open("config.json", "r") as f:
     config = json.load(f)
 
 FAMILY_CHANNEL_ID = config["family_group_channel"]
-THEMES = config["themes"]
 DM_ENABLED = config.get("dm_enabled", True)
 
 # ==============================
-# Tracks state in memory
+# Shared state
 # ==============================
 state = {
     "rotation_index": 0,
     "theme_index": 0,
     "last_theme_update": None,
-    "history": {},            # channel_id → [(author, content), ...]
-    "last_reply_time": {},    # channel_id → datetime
-    "message_counts": {},     # channel_id → deque of timestamps
-    "last_task_date": None,   # date of last spontaneous task
-    # store scheduled end-notifications so you can inspect/cancel if needed
+    "history": {},
+    "last_reply_time": {},
+    "message_counts": {},
+    "last_task_date": None,
     "spontaneous_end_tasks": {}
 }
 
@@ -71,8 +65,8 @@ for s in config["rotation"]:
         aria_commands.setup_aria_commands(
             aria_bot.tree,
             state,
-            lambda: get_today_rotation(state, config),
-            lambda: get_current_theme(state, config),
+            lambda: None,
+            lambda: None,
             lambda: asyncio.create_task(send_morning_message(state, config, sisters)),
             lambda: asyncio.create_task(send_night_message(state, config, sisters))
         )
@@ -90,8 +84,8 @@ for s in config["rotation"]:
 
     @bot.event
     async def on_message(message, b=bot):
-        # delegate all sister behaviour
         await handle_sister_message(b, message, state, config, sisters)
+
 
 # ==============================
 # FastAPI App
@@ -101,15 +95,12 @@ app = FastAPI()
 @app.on_event("startup")
 async def startup_event():
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(lambda: send_morning_message(state, config, sisters), "cron", hour=6, minute=0)
-    scheduler.add_job(lambda: send_night_message(state, config, sisters), "cron", hour=22, minute=0)
-
-    # Spontaneous task checker (hourly)
-    scheduler.add_job(lambda: send_spontaneous_task(state, config, sisters), "cron", minute=0)
-
+    scheduler.add_job(lambda: asyncio.create_task(send_morning_message(state, config, sisters)), "cron", hour=6, minute=0)
+    scheduler.add_job(lambda: asyncio.create_task(send_night_message(state, config, sisters)), "cron", hour=22, minute=0)
+    scheduler.add_job(lambda: asyncio.create_task(send_spontaneous_task(state, config, sisters)), "interval", minutes=60)
     scheduler.start()
+
     for s in sisters:
-        # start discord clients
         asyncio.create_task(s.start(s.token))
     log_event("[SYSTEM] Bots started with scheduler active.")
 
@@ -121,14 +112,9 @@ async def health():
 
 @app.get("/status")
 async def status():
-    rotation = get_today_rotation(state, config)
-    theme = get_current_theme(state, config)
     return {
         "bots": [s.sister_info["name"] for s in sisters],
         "ready": [s.sister_info["name"] for s in sisters if s.is_ready()],
-        "rotation": rotation,
-        "theme": theme,
-        "last_task_date": str(state.get("last_task_date"))
     }
 
 
@@ -140,23 +126,3 @@ async def get_logs(lines: int = 50):
         return "".join(all_lines[-lines:])
     except FileNotFoundError:
         return "[LOGGER] No memory_log.txt found."
-
-
-@app.post("/force-rotate")
-async def force_rotate():
-    state["rotation_index"] += 1
-    rotation = get_today_rotation(state, config)
-    log_event(f"Rotation manually advanced. New lead: {rotation['lead']}")
-    return {"status": "rotation advanced", "new_lead": rotation["lead"]}
-
-
-@app.post("/force-morning")
-async def force_morning():
-    await send_morning_message(state, config, sisters)
-    return {"status": "morning message forced"}
-
-
-@app.post("/force-night")
-async def force_night():
-    await send_night_message(state, config, sisters)
-    return {"status": "night message forced"}
