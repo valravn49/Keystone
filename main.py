@@ -4,6 +4,7 @@ import json
 import asyncio
 import discord
 from discord.ext import commands, tasks
+from fastapi import FastAPI
 
 import sisters_behavior  # ✅ import the whole module
 from sisters_behavior import (
@@ -39,16 +40,18 @@ class SisterBot(commands.Bot):
         self.sister_info = sister_info
 
     async def setup_hook(self):
-        setup_aria_commands(self.tree, state,
-                            lambda: sisters_behavior.get_today_rotation(state, config),
-                            lambda: sisters_behavior.get_current_theme(state, config),
-                            lambda: send_morning_message(state, config, sisters),
-                            lambda: send_night_message(state, config, sisters))
+        setup_aria_commands(
+            self.tree,
+            state,
+            lambda: sisters_behavior.get_today_rotation(state, config),
+            lambda: sisters_behavior.get_current_theme(state, config),
+            lambda: send_morning_message(state, config, sisters),
+            lambda: send_night_message(state, config, sisters),
+        )
         await self.tree.sync()
 
 # Create bot instances for each sister
 sisters = [SisterBot(s) for s in config["rotation"]]
-
 
 # ---------------- Events ----------------
 @sisters[0].event
@@ -57,12 +60,10 @@ async def on_ready():
     for bot in sisters:
         log_event(f"{bot.sister_info['name']} logged in as {bot.user}")
 
-
 @sisters[0].event
 async def on_message(message):
     if message.author.bot:
         return
-
     channel_id = message.channel.id
     author = str(message.author)
     content = message.content
@@ -70,7 +71,6 @@ async def on_message(message):
     await sisters_behavior.handle_sister_message(
         state, config, sisters, author, content, channel_id
     )
-
 
 # ---------------- Tasks ----------------
 @tasks.loop(hours=24)
@@ -85,10 +85,9 @@ async def night_task():
 async def spontaneous_task():
     await send_spontaneous_task(state, config, sisters)
 
-
 @morning_task.before_loop
 async def before_morning():
-    await asyncio.sleep(5)  # wait for bots to be ready
+    await asyncio.sleep(5)
 
 @night_task.before_loop
 async def before_night():
@@ -98,18 +97,31 @@ async def before_night():
 async def before_spontaneous():
     await asyncio.sleep(10)
 
-
-# ---------------- Run ----------------
+# ---------------- Bot Runner ----------------
 def run_all():
     for bot in sisters:
         asyncio.create_task(bot.start(os.getenv(bot.sister_info["env_var"])))
-
     morning_task.start()
     night_task.start()
     spontaneous_task.start()
 
-    asyncio.get_event_loop().run_forever()
+# ---------------- FastAPI App ----------------
+app = FastAPI()
 
-
-if __name__ == "__main__":
+@app.on_event("startup")
+async def startup_event():
     run_all()
+    log_event("[SYSTEM] FastAPI + Discord bots started.")
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+@app.get("/status")
+async def status():
+    return {
+        "bots": [s.sister_info["name"] for s in sisters],
+        "ready": [s.sister_info["name"] for s in sisters if s.is_ready()],
+        "rotation": sisters_behavior.get_today_rotation(state, config),
+        "theme": sisters_behavior.get_current_theme(state, config),
+    }
