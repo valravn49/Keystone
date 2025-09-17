@@ -267,3 +267,128 @@ async def send_night_message(state, config, sisters):
             append_ritual_log(rest, "rest", theme, rest_reply)
 
     log_event(f"[SCHEDULER] Night message completed with {lead} as lead")
+
+# ---------------- Chat Handling ----------------
+from collections import deque
+
+async def handle_sister_message(
+    bot,
+    message,
+    state,
+    config
+):
+    """
+    Core handler for processing messages from a sister bot.
+    Includes DM handling, family channel replies, history management, and cooldown/limits.
+    """
+
+    if message.author == bot.user:
+        return
+
+    # --- DM Handling ---
+    if message.guild is None:  # means it's a DM
+        name = bot.sister_info["name"]
+        channel_id = message.channel.id
+        add_to_history(state, channel_id, str(message.author), message.content)
+
+        try:
+            reply = await generate_llm_reply(
+                sister=name,
+                user_message=message.content,
+                theme=get_current_theme(state, config),
+                role="dm",
+                history=state["history"].get(channel_id, [])
+            )
+            if reply:
+                await message.channel.send(reply)
+                log_event(f"[DM] {name} → {message.author}: {reply}")
+                append_conversation_log(
+                    sister=name,
+                    role="dm",
+                    theme=get_current_theme(state, config),
+                    user_message=message.content,
+                    content=reply
+                )
+        except Exception as e:
+            print(f"[ERROR] DM reply failed for {name}: {e}")
+        return
+
+    # --- Ignore outside family channel ---
+    if message.channel.id != config["family_group_channel"]:
+        return
+    if message.content.startswith("🌅") or message.content.startswith("🌙"):
+        return
+
+    # --- Cooldown check ---
+    now = datetime.now()
+    last = state.get("last_reply_time", {}).get(message.channel.id)
+    if last and (now - last).total_seconds() < COOLDOWN_SECONDS:
+        return
+
+    # --- Quota check ---
+    counts = state.setdefault("message_counts", {}).setdefault(message.channel.id, deque())
+    now_ts = time.time()
+    while counts and now_ts - counts[0] > MESSAGE_WINDOW:
+        counts.popleft()
+    if len(counts) >= MESSAGE_LIMIT:
+        return
+
+    # --- Conversation history ---
+    channel_id = message.channel.id
+    add_to_history(state, channel_id, str(message.author), message.content)
+
+    # --- Rotation logic ---
+    name = bot.sister_info["name"]
+    rotation = get_today_rotation(state, config)
+    role = None
+    should_reply = False
+
+    if name == rotation["lead"]:
+        role = "lead"; should_reply = True
+    elif name in rotation["supports"]:
+        role = "support"; should_reply = random.random() < 0.6
+    elif name == rotation["rest"]:
+        role = "rest"; should_reply = random.random() < 0.2
+
+    if not (should_reply and role):
+        return
+
+    # --- Style hints by role ---
+    if role == "lead":
+        style_hint = "Reply in 2–4 sentences, guiding the conversation."
+    elif role == "support":
+        style_hint = "Reply in 1–2 sentences, playful or supportive."
+    else:
+        style_hint = "Reply briefly, 1 short remark."
+
+    # --- Weighted random history pick (oldest gets higher weight) ---
+    history = state["history"].get(channel_id, [])
+    if not history:
+        return
+    weights = list(range(len(history), 0, -1))
+    author, content = random.choices(history, weights=weights, k=1)[0]
+
+    # --- Generate reply ---
+    try:
+        reply = await generate_llm_reply(
+            sister=name,
+            user_message=f"{author}: {content}\n{style_hint}",
+            theme=get_current_theme(state, config),
+            role=role,
+            history=history
+        )
+        if reply:
+            await message.channel.send(reply)
+            log_event(f"[CHAT] {name} ({role}) → {author}: {reply}")
+            append_conversation_log(
+                sister=name,
+                role=role,
+                theme=get_current_theme(state, config),
+                user_message=content,
+                content=reply
+            )
+            # update cooldown + quota
+            state.setdefault("last_reply_time", {})[channel_id] = now
+            counts.append(now_ts)
+    except Exception as e:
+        print(f"[ERROR] LLM reply failed for {name}: {e}")
