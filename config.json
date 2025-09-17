@@ -7,28 +7,32 @@
       "dob": "1999-03-20",
       "env_var": "ARIA_TOKEN",
       "cooldown_msgs_per_hour": 4,
-      "personality": "Bookish, introverted, nurturing. Aria is thoughtful and often reflective."
+      "personality": "Bookish, introverted, nurturing. Aria is thoughtful and often reflective.",
+      "swearing_allowed": false
     },
     {
       "name": "Selene",
       "dob": "2001-07-13",
       "env_var": "SELENE_TOKEN",
       "cooldown_msgs_per_hour": 3,
-      "personality": "Motherly, dreamy, caring. Selene is soft and supportive."
+      "personality": "Motherly, caring, warm. Selene is soft and supportive.",
+      "swearing_allowed": false
     },
     {
       "name": "Cassandra",
       "dob": "2003-01-01",
       "env_var": "CASS_TOKEN",
       "cooldown_msgs_per_hour": 2,
-      "personality": "Strict, disciplined, proud. Cassandra enforces structure but appreciates respect."
+      "personality": "Strict, disciplined, proud. Cassandra enforces structure but appreciates respect.",
+      "swearing_allowed": true
     },
     {
       "name": "Ivy",
       "dob": "2006-10-31",
       "env_var": "IVY_TOKEN",
       "cooldown_msgs_per_hour": 5,
-      "personality": "Playful, bratty, mischievous. Ivy teases like a cheeky little sister."
+      "personality": "Playful, bratty, mischievous. Ivy teases like a cheeky little sister.",
+      "swearing_allowed": true
     }
   ],
   "themes": [
@@ -45,5 +49,4 @@
     "starter_bias": 0.5
   },
   "log_support_comments": true
-  "allow_swearing": true
 }
