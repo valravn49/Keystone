@@ -1,3 +1,4 @@
+# sisters_behavior.py
 import random
 import time
 import re
@@ -7,7 +8,7 @@ from datetime import datetime, timedelta
 from llm import generate_llm_reply
 from logger import log_event, append_conversation_log, append_ritual_log
 from data_manager import parse_data_command, cross_file_summary
-from workouts import get_today_workout  # ✅ workout cycle integration
+from workouts import get_today_workout
 
 # Stub integrations
 from bluetooth_integration import connect_device, disconnect_device, send_command, get_status
@@ -42,6 +43,22 @@ PERSONA_TONES = {
     }
 }
 
+# ---------------- Persona + Swearing ----------------
+def build_persona_hint(sister_name: str, style_hint: str, config: dict) -> str:
+    """Build persona prompt with optional swearing allowance."""
+    sister = next((s for s in config["rotation"] if s["name"] == sister_name), None)
+    if not sister:
+        return style_hint
+
+    allow_swearing = sister.get("allow_swearing", False)
+    personality = sister.get("personality", "")
+
+    hint = f"Stay in character as {sister_name}. Personality: {personality}. {style_hint}"
+    if allow_swearing:
+        hint += " You may swear naturally if it fits your personality and tone."
+    else:
+        hint += " Avoid swearing."
+    return hint
 
 # ---------------- Helpers ----------------
 def add_to_history(state, channel_id, author, content):
@@ -83,7 +100,6 @@ async def post_to_family(message: str, sender, sisters, config):
                     print(f"[ERROR] Failed to send with {bot.sister_info['name']}: {e}")
                 break
 
-
 # ---------------- Duration extraction ----------------
 _DURATION_REGEX = re.compile(r"(\d+)\s*(hours|hour|hrs|hr|h|minutes|minute|mins|min|m)\b", re.I)
 
@@ -100,7 +116,6 @@ def _extract_duration_seconds(text: str):
 def _remove_duration_phrases(text: str):
     return _DURATION_REGEX.sub("", text).strip()
 
-
 async def _schedule_spontaneous_end(state, sisters, config, sister_name, duration_seconds):
     async def _wait_and_notify():
         try:
@@ -108,24 +123,27 @@ async def _schedule_spontaneous_end(state, sisters, config, sister_name, duratio
             persona = PERSONA_TONES.get(sister_name, {})
             intro = persona.get("intro_end", "Your task is complete. You may stop now.")
 
-            if random.random() < 0.5:
+            persona_hint = build_persona_hint(
+                sister_name,
+                style_hint=f"Expand this 1-line closing in your voice: \"{intro}\" Keep it to 1 short sentence.",
+                config=config
+            )
+
+            try:
+                expansion = await generate_llm_reply(
+                    sister=sister_name,
+                    user_message=f"{sister_name}: {persona_hint}",
+                    theme=None,
+                    role="lead",
+                    history=[]
+                )
+                line = expansion if expansion else intro
+            except Exception:
                 line = intro
-            else:
-                try:
-                    expansion = await generate_llm_reply(
-                        sister=sister_name,
-                        user_message=f"{sister_name}: Expand this 1-line closing in your voice: \"{intro}\" Keep it 1 short sentence.",
-                        theme=None,
-                        role="lead",
-                        history=[]
-                    )
-                    line = expansion if expansion else intro
-                except Exception:
-                    line = intro
 
             end_msg = f"{sister_name}: {line}"
             await post_to_family(end_msg, sender=sister_name, sisters=sisters, config=config)
-            log_event(f"[TASK-END] {sister_name} notified task end (persona-mixed).")
+            log_event(f"[TASK-END] {sister_name} notified task end.")
         except asyncio.CancelledError:
             log_event(f"[TASK-END] Cancelled end notification for {sister_name}.")
         except Exception as e:
@@ -134,7 +152,6 @@ async def _schedule_spontaneous_end(state, sisters, config, sister_name, duratio
     t = asyncio.create_task(_wait_and_notify())
     key = f"{datetime.now().date().isoformat()}_{sister_name}"
     state.setdefault("spontaneous_end_tasks", {})[key] = t
-
 
 # ---------------- Rituals ----------------
 async def send_morning_message(state, config, sisters):
@@ -145,29 +162,25 @@ async def send_morning_message(state, config, sisters):
     persona = PERSONA_TONES.get(lead, {})
     intro = persona.get("intro_morning")
 
-    if intro:
-        try:
-            lead_msg = await generate_llm_reply(
-                sister=lead,
-                user_message=f"{lead}: Use this opening as your tone and expand into a 3-5 sentence morning message. \"{intro}\"",
-                theme=theme,
-                role="lead",
-                history=[]
-            )
-            if not lead_msg:
-                lead_msg = intro
-        except Exception:
-            lead_msg = intro
-    else:
+    persona_hint = build_persona_hint(
+        lead,
+        style_hint=f"Use this opening as your tone and expand into a 3–5 sentence morning message. \"{intro}\"",
+        config=config
+    )
+
+    try:
         lead_msg = await generate_llm_reply(
             sister=lead,
-            user_message="Good morning message: include theme, hygiene reminders, and discipline check. Write 3–5 sentences.",
+            user_message=f"{lead}: {persona_hint}",
             theme=theme,
             role="lead",
             history=[]
         )
+        if not lead_msg:
+            lead_msg = intro
+    except Exception:
+        lead_msg = intro
 
-    # ✅ Add today's workout
     today_workout = get_today_workout()
     lead_msg += f"\n\n🏋️ Today’s workout:\n{today_workout}"
 
@@ -176,9 +189,10 @@ async def send_morning_message(state, config, sisters):
 
     for s in supports:
         if random.random() < 0.7:
+            persona_hint = build_persona_hint(s, "Short supportive morning comment, 1–2 sentences.", config)
             reply = await generate_llm_reply(
                 sister=s,
-                user_message="Short supportive morning comment, 1–2 sentences.",
+                user_message=f"{s}: {persona_hint}",
                 theme=theme,
                 role="support",
                 history=[]
@@ -188,9 +202,10 @@ async def send_morning_message(state, config, sisters):
                 append_ritual_log(s, "support", theme, reply)
 
     if random.random() < 0.2:
+        persona_hint = build_persona_hint(rest, "Quiet short morning remark, 1 sentence.", config)
         rest_reply = await generate_llm_reply(
             sister=rest,
-            user_message="Quiet short morning remark, 1 sentence.",
+            user_message=f"{rest}: {persona_hint}",
             theme=theme,
             role="rest",
             history=[]
@@ -202,7 +217,6 @@ async def send_morning_message(state, config, sisters):
     state["rotation_index"] = state.get("rotation_index", 0) + 1
     log_event(f"[SCHEDULER] Morning message completed with {lead} as lead")
 
-
 async def send_night_message(state, config, sisters):
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
@@ -211,29 +225,25 @@ async def send_night_message(state, config, sisters):
     persona = PERSONA_TONES.get(lead, {})
     intro = persona.get("intro_night")
 
-    if intro:
-        try:
-            lead_msg = await generate_llm_reply(
-                sister=lead,
-                user_message=f"{lead}: Use this opening as your tone and expand into a 3-5 sentence night message. \"{intro}\"",
-                theme=theme,
-                role="lead",
-                history=[]
-            )
-            if not lead_msg:
-                lead_msg = intro
-        except Exception:
-            lead_msg = intro
-    else:
+    persona_hint = build_persona_hint(
+        lead,
+        style_hint=f"Use this opening as your tone and expand into a 3–5 sentence night message. \"{intro}\"",
+        config=config
+    )
+
+    try:
         lead_msg = await generate_llm_reply(
             sister=lead,
-            user_message="Good night message: thank supporters, ask reflection, remind about outfits, and plug/service tasks. Write 3–5 sentences.",
+            user_message=f"{lead}: {persona_hint}",
             theme=theme,
             role="lead",
             history=[]
         )
+        if not lead_msg:
+            lead_msg = intro
+    except Exception:
+        lead_msg = intro
 
-    # ✅ Add tomorrow's workout
     tomorrow = datetime.now().date() + timedelta(days=1)
     tomorrow_workout = get_today_workout(tomorrow)
     lead_msg += f"\n\n🌙 Tomorrow’s workout:\n{tomorrow_workout}"
@@ -243,9 +253,10 @@ async def send_night_message(state, config, sisters):
 
     for s in supports:
         if random.random() < 0.6:
+            persona_hint = build_persona_hint(s, "Short supportive night comment, 1–2 sentences.", config)
             reply = await generate_llm_reply(
                 sister=s,
-                user_message="Short supportive night comment, 1–2 sentences.",
+                user_message=f"{s}: {persona_hint}",
                 theme=theme,
                 role="support",
                 history=[]
@@ -255,9 +266,10 @@ async def send_night_message(state, config, sisters):
                 append_ritual_log(s, "support", theme, reply)
 
     if random.random() < 0.15:
+        persona_hint = build_persona_hint(rest, "Brief quiet night remark, 1 sentence.", config)
         rest_reply = await generate_llm_reply(
             sister=rest,
-            user_message="Brief quiet night remark, 1 sentence.",
+            user_message=f"{rest}: {persona_hint}",
             theme=theme,
             role="rest",
             history=[]
@@ -268,127 +280,41 @@ async def send_night_message(state, config, sisters):
 
     log_event(f"[SCHEDULER] Night message completed with {lead} as lead")
 
-# ---------------- Chat Handling ----------------
-from collections import deque
+# ---------------- Spontaneous Tasks ----------------
+async def send_spontaneous_task(state, config, sisters):
+    """Assign at most one spontaneous task per day across all sisters."""
+    today_key = datetime.now().date().isoformat()
+    if state.get("spontaneous_task_date") == today_key:
+        return  # already assigned today
 
-async def handle_sister_message(
-    bot,
-    message,
-    state,
-    config
-):
-    """
-    Core handler for processing messages from a sister bot.
-    Includes DM handling, family channel replies, history management, and cooldown/limits.
-    """
+    chosen = random.choice(config["rotation"])
+    sister_name = chosen["name"]
 
-    if message.author == bot.user:
-        return
+    persona_hint = build_persona_hint(
+        sister_name,
+        style_hint="Assign a spontaneous discipline or care task in your voice, 1–2 sentences only. Direct and fitting your personality.",
+        config=config
+    )
 
-    # --- DM Handling ---
-    if message.guild is None:  # means it's a DM
-        name = bot.sister_info["name"]
-        channel_id = message.channel.id
-        add_to_history(state, channel_id, str(message.author), message.content)
-
-        try:
-            reply = await generate_llm_reply(
-                sister=name,
-                user_message=message.content,
-                theme=get_current_theme(state, config),
-                role="dm",
-                history=state["history"].get(channel_id, [])
-            )
-            if reply:
-                await message.channel.send(reply)
-                log_event(f"[DM] {name} → {message.author}: {reply}")
-                append_conversation_log(
-                    sister=name,
-                    role="dm",
-                    theme=get_current_theme(state, config),
-                    user_message=message.content,
-                    content=reply
-                )
-        except Exception as e:
-            print(f"[ERROR] DM reply failed for {name}: {e}")
-        return
-
-    # --- Ignore outside family channel ---
-    if message.channel.id != config["family_group_channel"]:
-        return
-    if message.content.startswith("🌅") or message.content.startswith("🌙"):
-        return
-
-    # --- Cooldown check ---
-    now = datetime.now()
-    last = state.get("last_reply_time", {}).get(message.channel.id)
-    if last and (now - last).total_seconds() < COOLDOWN_SECONDS:
-        return
-
-    # --- Quota check ---
-    counts = state.setdefault("message_counts", {}).setdefault(message.channel.id, deque())
-    now_ts = time.time()
-    while counts and now_ts - counts[0] > MESSAGE_WINDOW:
-        counts.popleft()
-    if len(counts) >= MESSAGE_LIMIT:
-        return
-
-    # --- Conversation history ---
-    channel_id = message.channel.id
-    add_to_history(state, channel_id, str(message.author), message.content)
-
-    # --- Rotation logic ---
-    name = bot.sister_info["name"]
-    rotation = get_today_rotation(state, config)
-    role = None
-    should_reply = False
-
-    if name == rotation["lead"]:
-        role = "lead"; should_reply = True
-    elif name in rotation["supports"]:
-        role = "support"; should_reply = random.random() < 0.6
-    elif name == rotation["rest"]:
-        role = "rest"; should_reply = random.random() < 0.2
-
-    if not (should_reply and role):
-        return
-
-    # --- Style hints by role ---
-    if role == "lead":
-        style_hint = "Reply in 2–4 sentences, guiding the conversation."
-    elif role == "support":
-        style_hint = "Reply in 1–2 sentences, playful or supportive."
-    else:
-        style_hint = "Reply briefly, 1 short remark."
-
-    # --- Weighted random history pick (oldest gets higher weight) ---
-    history = state["history"].get(channel_id, [])
-    if not history:
-        return
-    weights = list(range(len(history), 0, -1))
-    author, content = random.choices(history, weights=weights, k=1)[0]
-
-    # --- Generate reply ---
     try:
-        reply = await generate_llm_reply(
-            sister=name,
-            user_message=f"{author}: {content}\n{style_hint}",
+        task_msg = await generate_llm_reply(
+            sister=sister_name,
+            user_message=f"{sister_name}: {persona_hint}",
             theme=get_current_theme(state, config),
-            role=role,
-            history=history
+            role="lead",
+            history=[]
         )
-        if reply:
-            await message.channel.send(reply)
-            log_event(f"[CHAT] {name} ({role}) → {author}: {reply}")
-            append_conversation_log(
-                sister=name,
-                role=role,
-                theme=get_current_theme(state, config),
-                user_message=content,
-                content=reply
-            )
-            # update cooldown + quota
-            state.setdefault("last_reply_time", {})[channel_id] = now
-            counts.append(now_ts)
+        if task_msg:
+            await post_to_family(f"{sister_name}: {task_msg}", sender=sister_name, sisters=sisters, config=config)
+            log_event(f"[SPONTANEOUS] {sister_name} assigned: {task_msg}")
+            parse_data_command(sister_name, f"[SPONTANEOUS] {task_msg}")
+            state["spontaneous_task_date"] = today_key
+
+            duration_seconds = _extract_duration_seconds(task_msg)
+            if duration_seconds:
+                cleaned = _remove_duration_phrases(task_msg)
+                parse_data_command(sister_name, f"[SPONTANEOUS] {cleaned}")
+                await _schedule_spontaneous_end(state, sisters, config, sister_name, duration_seconds)
+
     except Exception as e:
-        print(f"[ERROR] LLM reply failed for {name}: {e}")
+        log_event(f"[ERROR] Spontaneous task failed for {sister_name}: {e}")
