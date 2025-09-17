@@ -1,7 +1,7 @@
 # workouts.py
 import os
 import json
-from datetime import datetime
+from datetime import datetime, date
 
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -9,17 +9,26 @@ os.makedirs(DATA_DIR, exist_ok=True)
 CONFIG_FILE = os.path.join(DATA_DIR, "workouts_config.json")
 DATA_FILE = os.path.join(DATA_DIR, "workouts_data.json")
 
-# Default workouts
+# Default workouts for calorie tracking (kcal/minute)
 WORKOUTS = {
     "running": 10,
     "cycling": 8,
     "yoga": 4
 }
 
+# 4-day cycle workouts
+CYCLE_WORKOUTS = [
+    "Waist Slimming & Core Control",
+    "Leg & Booty Shaping",
+    "Upper Body Toning (Lean, Not Buff)",
+    "Stretching, Posture & Light Cardio"
+]
+
 data = {"workout_log": []}
 
 
 def _load_data():
+    """Load workout log and custom workout config from disk."""
     global data, WORKOUTS
     if os.path.exists(DATA_FILE):
         try:
@@ -37,12 +46,16 @@ def _load_data():
 
 
 def _save_data():
+    """Save workout log and custom workout config to disk."""
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(WORKOUTS, f, indent=2)
 
 
+# -----------------------
+#  Calorie Tracking
+# -----------------------
 def validate_workout(name: str) -> bool:
     return name.lower() in WORKOUTS
 
@@ -113,5 +126,20 @@ def get_workout_summary():
     return summary
 
 
-# Load at startup
+# -----------------------
+#  4-Day Cycle
+# -----------------------
+def get_today_workout() -> str:
+    """Return today's workout in the 4-day repeating cycle."""
+    today_index = date.today().toordinal() % len(CYCLE_WORKOUTS)
+    return CYCLE_WORKOUTS[today_index]
+
+
+def get_tomorrow_workout() -> str:
+    """Return tomorrow's workout in the 4-day repeating cycle."""
+    tomorrow_index = (date.today().toordinal() + 1) % len(CYCLE_WORKOUTS)
+    return CYCLE_WORKOUTS[tomorrow_index]
+
+
+# Load persistent data on import
 _load_data()
