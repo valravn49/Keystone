@@ -9,27 +9,20 @@ os.makedirs(DATA_DIR, exist_ok=True)
 CONFIG_FILE = os.path.join(DATA_DIR, "workouts_config.json")
 DATA_FILE = os.path.join(DATA_DIR, "workouts_data.json")
 
-# Default workouts for calorie tracking (kcal/minute)
-WORKOUTS = {
-    "running": 10,
-    "cycling": 8,
-    "yoga": 4
-}
-
-# 4-day cycle workouts
-CYCLE_WORKOUTS = [
-    "Waist Slimming & Core Control",
-    "Leg & Booty Shaping",
-    "Upper Body Toning (Lean, Not Buff)",
-    "Stretching, Posture & Light Cardio"
+# Default 4-day workout cycle
+WORKOUT_CYCLE = [
+    "Day 1: Upper body strength (push/pull split, weights)",
+    "Day 2: Lower body focus (squats, deadlifts, legs)",
+    "Day 3: Core + conditioning (planks, HIIT, circuits)",
+    "Day 4: Stretching, posture, light cardio (rest/active recovery)"
 ]
 
 data = {"workout_log": []}
 
 
+# ---------------- Persistence ----------------
 def _load_data():
-    """Load workout log and custom workout config from disk."""
-    global data, WORKOUTS
+    global data
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -37,68 +30,36 @@ def _load_data():
         except Exception:
             data = {"workout_log": []}
 
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                WORKOUTS = json.load(f)
-        except Exception:
-            pass
-
 
 def _save_data():
-    """Save workout log and custom workout config to disk."""
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(WORKOUTS, f, indent=2)
 
 
-# -----------------------
-#  Calorie Tracking
-# -----------------------
-def validate_workout(name: str) -> bool:
-    return name.lower() in WORKOUTS
+# ---------------- Deterministic Cycle ----------------
+def get_today_workout(target_date: date = None):
+    """
+    Return the workout for the given date, based on a 4-day deterministic cycle.
+    Always consistent: the same calendar date yields the same workout.
+    """
+    if target_date is None:
+        target_date = datetime.now().date()
+
+    day_index = target_date.toordinal() % len(WORKOUT_CYCLE)
+    return WORKOUT_CYCLE[day_index]
 
 
-def calculate_calories_burned(name: str, duration: int) -> int:
-    rate = WORKOUTS.get(name.lower())
-    if rate is None:
-        raise ValueError(f"Unknown workout: {name}")
-    return rate * duration
-
-
-def add_workout(name: str, rate: int):
-    WORKOUTS[name.lower()] = rate
-    _save_data()
-
-
-def remove_workout(name: str):
-    name = name.lower()
-    if name in WORKOUTS:
-        del WORKOUTS[name]
-    _save_data()
-
-
-def list_workouts() -> str:
-    if not WORKOUTS:
-        return "⚠️ No workouts defined."
-
-    header = f"{'Workout':<15} | {'kcal/min':>8}"
-    sep = "-" * len(header)
-    rows = [f"{w:<15} | {c:>8}" for w, c in WORKOUTS.items()]
-    return "\n".join([header, sep] + rows)
-
-
-def log_workout(user: str, name: str, duration: int):
-    if not validate_workout(name):
-        raise ValueError(f"Unknown workout: {name}")
-    calories = calculate_calories_burned(name, duration)
+# ---------------- Logging ----------------
+def log_workout(user: str, name: str, duration: int, calories: int = None):
+    """
+    Log a workout session for today.
+    """
     entry = {
         "timestamp": datetime.now().isoformat(),
         "user": user,
         "workout": name,
         "duration": duration,
-        "calories": calories
+        "calories": calories,
     }
     data["workout_log"].append(entry)
     _save_data()
@@ -114,8 +75,8 @@ def get_workout_summary():
     if not workouts_today:
         return "📊 No workouts logged today."
 
-    total_minutes = sum(w["duration"] for w in workouts_today)
-    total_calories = sum(w["calories"] for w in workouts_today)
+    total_minutes = sum(w["duration"] for w in workouts_today if w.get("duration"))
+    total_calories = sum(w["calories"] or 0 for w in workouts_today)
 
     summary = (
         f"📊 Workout Summary for {today}:\n"
@@ -126,20 +87,5 @@ def get_workout_summary():
     return summary
 
 
-# -----------------------
-#  4-Day Cycle
-# -----------------------
-def get_today_workout() -> str:
-    """Return today's workout in the 4-day repeating cycle."""
-    today_index = date.today().toordinal() % len(CYCLE_WORKOUTS)
-    return CYCLE_WORKOUTS[today_index]
-
-
-def get_tomorrow_workout() -> str:
-    """Return tomorrow's workout in the 4-day repeating cycle."""
-    tomorrow_index = (date.today().toordinal() + 1) % len(CYCLE_WORKOUTS)
-    return CYCLE_WORKOUTS[tomorrow_index]
-
-
-# Load persistent data on import
+# ---------------- Startup ----------------
 _load_data()
