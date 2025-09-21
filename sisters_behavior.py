@@ -27,7 +27,7 @@ PERSONA_TONES = {
     },
 }
 
-# ---------------- Helpers ----------------
+# ---------------- Rotation & Theme ----------------
 def get_today_rotation(state, config):
     idx = state["rotation_index"] % len(config["rotation"])
     lead = config["rotation"][idx]["name"]
@@ -44,15 +44,42 @@ def get_current_theme(state, config):
         state["last_theme_update"] = today
     return config["themes"][state.get("theme_index", 0)]
 
-def is_awake(sister_info, lead_name):
-    """Check if sister is awake unless she’s lead (then always awake)."""
-    if sister_info["name"] == lead_name:
-        return True
-    now = datetime.now().time()
-    wake = datetime.strptime(sister_info.get("wake", "06:00"), "%H:%M").time()
-    bed = datetime.strptime(sister_info.get("bed", "22:00"), "%H:%M").time()
-    return wake <= now <= bed
+# ---------------- Daily Schedules ----------------
+def assign_schedule(state, config, sister_name: str):
+    """Assign today's wake/sleep for a sister if not already stored."""
+    today = datetime.now().date()
+    key = f"{sister_name}_schedule"
+    if state.get(f"{key}_date") == today and key in state:
+        return state[key]
 
+    scfg = config.get("schedules", {}).get(sister_name, {"wake": [6, 8], "sleep": [22, 23]})
+    wake_rng = scfg.get("wake", [6, 8])
+    sleep_rng = scfg.get("sleep", [22, 23])
+
+    wake_hr = random.randint(wake_rng[0], wake_rng[1])
+    sleep_hr = random.randint(sleep_rng[0], sleep_rng[1])
+
+    schedule = {"wake": wake_hr, "sleep": sleep_hr}
+    state[key] = schedule
+    state[f"{key}_date"] = today
+    return schedule
+
+def is_awake(state, config, sister_name: str, lead_name: str):
+    """Check if a sister is awake unless she’s lead (then always awake)."""
+    if sister_name == lead_name:
+        return True
+
+    sc = assign_schedule(state, config, sister_name)
+    now_hour = datetime.now().hour
+    wake, sleep = sc["wake"], sc["sleep"]
+
+    if wake < sleep:
+        return wake <= now_hour < sleep
+    else:
+        # Handles overnight schedules like 23 → 2
+        return now_hour >= wake or now_hour < sleep
+
+# ---------------- Messaging ----------------
 async def post_to_family(message: str, sender, sisters, config):
     """Send to family channel through the correct bot instance."""
     for bot in sisters:
@@ -84,7 +111,6 @@ async def send_morning_message(state, config, sisters):
     except Exception:
         lead_msg = intro
 
-    # Workout
     workout_block = get_today_workout()
     lead_msg += f"\n\n🏋️ Today’s workout:\n{workout_block}"
 
@@ -92,18 +118,17 @@ async def send_morning_message(state, config, sisters):
     append_ritual_log(lead, "lead", theme, lead_msg)
 
     for s in supports:
-        if is_awake(next(bot.sister_info for bot in sisters if bot.sister_info["name"] == s), lead):
-            if random.random() < 0.7:
-                reply = await generate_llm_reply(
-                    sister=s,
-                    user_message="Short supportive morning comment, 1–2 sentences.",
-                    theme=theme,
-                    role="support",
-                    history=[],
-                )
-                if reply:
-                    await post_to_family(reply, sender=s, sisters=sisters, config=config)
-                    append_ritual_log(s, "support", theme, reply)
+        if is_awake(state, config, s, lead) and random.random() < 0.7:
+            reply = await generate_llm_reply(
+                sister=s,
+                user_message="Short supportive morning comment, 1–2 sentences.",
+                theme=theme,
+                role="support",
+                history=[],
+            )
+            if reply:
+                await post_to_family(reply, sender=s, sisters=sisters, config=config)
+                append_ritual_log(s, "support", theme, reply)
 
     state["rotation_index"] = state.get("rotation_index", 0) + 1
 
@@ -132,18 +157,17 @@ async def send_night_message(state, config, sisters):
     append_ritual_log(lead, "lead", theme, lead_msg)
 
     for s in supports:
-        if is_awake(next(bot.sister_info for bot in sisters if bot.sister_info["name"] == s), lead):
-            if random.random() < 0.6:
-                reply = await generate_llm_reply(
-                    sister=s,
-                    user_message="Short supportive night comment, 1–2 sentences.",
-                    theme=theme,
-                    role="support",
-                    history=[],
-                )
-                if reply:
-                    await post_to_family(reply, sender=s, sisters=sisters, config=config)
-                    append_ritual_log(s, "support", theme, reply)
+        if is_awake(state, config, s, lead) and random.random() < 0.6:
+            reply = await generate_llm_reply(
+                sister=s,
+                user_message="Short supportive night comment, 1–2 sentences.",
+                theme=theme,
+                role="support",
+                history=[],
+            )
+            if reply:
+                await post_to_family(reply, sender=s, sisters=sisters, config=config)
+                append_ritual_log(s, "support", theme, reply)
 
 # ---------------- Interaction ----------------
 async def handle_sister_message(state, config, sisters, author, content, channel_id):
@@ -156,7 +180,7 @@ async def handle_sister_message(state, config, sisters, author, content, channel
         sname = bot.sister_info["name"]
         if sname == author:
             continue
-        if not is_awake(bot.sister_info, lead):
+        if not is_awake(state, config, sname, lead):
             continue
 
         chance = 0.2
