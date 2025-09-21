@@ -2,81 +2,62 @@
 import random
 import re
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dtime
+from typing import Dict, List, Optional
 
 from llm import generate_llm_reply
 from logger import log_event, append_ritual_log
 from workouts import get_today_workout
 
-# ---------------- Persona tones ----------------
+# ---------------- Personality tone seeds (for brief on-brand expansions) ----------------
 PERSONA_TONES = {
     "Aria": {
         "intro_morning": "Good morning — be gentle with yourself today; remember your duties and care.",
         "intro_night": "Time to rest, sweet one. Reflect kindly on your progress.",
-        "end_line": "That’s enough time. You can stop now, love."
+        "closing": "That’s enough time. You can stop now, love.",
     },
-    "Selene": {
+    "Selene": {  # motherly
         "intro_morning": "Good morning, darling — take things slowly and be kind to your body today.",
         "intro_night": "Sleep well, my dear. I’ve been thinking of your care and comfort.",
-        "end_line": "Lovely — your time is up. Come relax and breathe."
+        "closing": "Lovely — your time is up. Come relax and breathe.",
     },
     "Cassandra": {
         "intro_morning": "Morning. Be prepared, stay disciplined, and do not slack.",
         "intro_night": "The day is done. Review your discipline and rest ready for tomorrow.",
-        "end_line": "Discipline complete. You may end the task — because I allow it."
+        "closing": "Discipline complete. You may end the task — because I allow it.",
     },
     "Ivy": {
         "intro_morning": "Wake up, sleepyhead~ Don’t dawdle or I’ll tease you all day.",
         "intro_night": "Bedtime already? Tuck in, cutie — naughty dreams await.",
-        "end_line": "Hehe~ done! You can stop now 💕"
+        "closing": "Hehe~ done! Bet you squirmed — you can stop now 💕",
     },
 }
 
-# ---------------- Message parsing helpers ----------------
+# ---------------- Basic knobs ----------------
 HISTORY_LIMIT = 6
+# Channel reply anti-spam is handled in main or earlier versions; here we keep behavior logic.
+
+# Spontaneous task: 1 per day across all sisters
+SPONTANEOUS_MAX_PER_DAY = 1
+
+# Casual chatter pacing (seconds)
+CHATTER_MIN_SLEEP = 45 * 60
+CHATTER_MAX_SLEEP = 110 * 60
+
+# Inline duration parsing for spontaneous tasks (kept private; we never reveal the number)
 _DURATION_REGEX = re.compile(r"(\d+)\s*(hours|hour|hrs|hr|h|minutes|minute|mins|min|m)\b", re.I)
 
-def _extract_duration_seconds(text: str):
-    """Return duration in seconds if present; otherwise None."""
-    if not text:
-        return None
-    m = _DURATION_REGEX.search(text)
-    if not m:
-        return None
-    val = int(m.group(1))
-    unit = m.group(2).lower()
-    return val * 3600 if unit.startswith("h") else val * 60
 
-def _strip_leading_name_prefix(sister_name: str, text: str) -> str:
-    """
-    Prevent outputs like 'aria:' at the start if the LLM mirrors a name.
-    Remove only a leading '<name>:' once; preserve the rest.
-    """
-    if not text:
-        return text
-    lowered = text.strip().lower()
-    prefix = f"{sister_name.lower()}:"
-    if lowered.startswith(prefix):
-        parts = text.split(":", 1)
-        return parts[1].lstrip() if len(parts) > 1 else text
-    return text
-
-# ---------------- Shared helpers ----------------
-def add_to_history(state, channel_id, author, content):
-    if channel_id not in state["history"]:
-        state["history"][channel_id] = []
-    state["history"][channel_id].append((author, content))
-    if len(state["history"][channel_id]) > HISTORY_LIMIT:
-        state["history"][channel_id] = state["history"][channel_id][-HISTORY_LIMIT:]
-
-def get_today_rotation(state, config):
+# ---------------- Utility: rotation & theme ----------------
+def get_today_rotation(state: Dict, config: Dict):
     idx = state.get("rotation_index", 0) % len(config["rotation"])
     lead = config["rotation"][idx]["name"]
     rest = config["rotation"][(idx + 1) % len(config["rotation"])]["name"]
     supports = [s["name"] for s in config["rotation"] if s["name"] not in [lead, rest]]
     return {"lead": lead, "rest": rest, "supports": supports}
 
-def get_current_theme(state, config):
+
+def get_current_theme(state: Dict, config: Dict):
     today = datetime.now().date()
     if state.get("last_theme_update") is None or (
         today.weekday() == 0 and state.get("last_theme_update") != today
@@ -85,7 +66,9 @@ def get_current_theme(state, config):
         state["last_theme_update"] = today
     return config["themes"][state.get("theme_index", 0)]
 
-async def post_to_family(message: str, sender, sisters, config):
+
+async def post_to_family(message: str, sender: Optional[str], sisters, config: Dict):
+    """Send to the family channel via the specified sister (or the first ready)."""
     for bot in sisters:
         if bot.is_ready():
             if not sender or bot.sister_info["name"] == sender:
@@ -95,16 +78,149 @@ async def post_to_family(message: str, sender, sisters, config):
                         await channel.send(message)
                         log_event(f"{bot.sister_info['name']} posted: {message}")
                 except Exception as e:
-                    log_event(f"[ERROR] Failed send {bot.sister_info['name']}: {e}")
+                    log_event(f"[ERROR] Failed to send with {bot.sister_info['name']}: {e}")
                 break
 
-# ---------------- Rituals ----------------
+
+# ---------------- Scheduling: wake/sleep per sister ----------------
+def _pick_hour_in_range(rng: List[int]) -> int:
+    lo, hi = int(rng[0]), int(rng[1])
+    if hi < lo:
+        hi = lo
+    return random.randint(lo, hi)
+
+
+def assign_daily_schedule(state: Dict, config: Dict):
+    """Assign (or reuse) today's wake/sleep hour windows from config['schedules']."""
+    today = datetime.now().date()
+    if state.get("schedules_date") == today and state.get("schedules"):
+        return state["schedules"]
+
+    state["schedules"] = {}
+    schedules_cfg = config.get("schedules", {})
+    rotation = config["rotation"]
+    for entry in rotation:
+        name = entry["name"]
+        scfg = schedules_cfg.get(name, {})
+        wake_rng = scfg.get("wake", [7, 9])
+        sleep_rng = scfg.get("sleep", [21, 23])
+        state["schedules"][name] = {
+            "wake": _pick_hour_in_range(wake_rng),
+            "sleep": _pick_hour_in_range(sleep_rng),
+        }
+    state["schedules_date"] = today
+    return state["schedules"]
+
+
+def _hour_in_window(now_hour: int, wake: int, sleep: int) -> bool:
+    """Return True if now_hour is within [wake, sleep) in 24h wrap-aware fashion."""
+    if wake == sleep:
+        return True  # degenerate = always on
+    if wake < sleep:
+        return wake <= now_hour < sleep
+    # wrap past midnight
+    return now_hour >= wake or now_hour < sleep
+
+
+def is_sibling_online(name: str, state: Dict, config: Dict) -> bool:
+    """Lead is always online; others respect schedule windows."""
+    rotation = get_today_rotation(state, config)
+    if name == rotation["lead"]:
+        return True
+    schedules = assign_daily_schedule(state, config)
+    sc = schedules.get(name)
+    if not sc:
+        return True  # if no schedule, default online
+    now_hour = datetime.now().hour
+    return _hour_in_window(now_hour, sc["wake"], sc["sleep"])
+
+
+# ---------------- Inter-sister chatter ----------------
+async def inter_sister_replies(state, config, sisters, origin: str, origin_msg: str, theme: str):
+    """After a lead/scheduled message, allow sisters to reply once naturally."""
+    for s in config["rotation"]:
+        name = s["name"]
+        if name == origin:
+            continue
+        if not is_sibling_online(name, state, config):
+            continue
+        # 40% chance to reply to the origin post
+        if random.random() < 0.4:
+            await asyncio.sleep(random.randint(15, 75))  # slight delay for realism
+            try:
+                reply = await generate_llm_reply(
+                    sister=name,
+                    user_message=f"{origin} said: \"{origin_msg}\". "
+                                 f"Write a natural 1–2 sentence reply in {name}'s style.",
+                    theme=theme,
+                    role="sister",
+                    history=[],
+                )
+                if reply:
+                    await post_to_family(reply, sender=name, sisters=sisters, config=config)
+                    log_event(f"[INTERACTION] {name} replied to {origin}")
+            except Exception as e:
+                log_event(f"[ERROR] inter_sister_replies for {name}: {e}")
+
+
+async def sibling_chatter_loop(state, config, sisters):
+    """Runs all day; online siblings may casually ping each other."""
+    # Ensure we only start one chatter loop
+    if state.get("chatter_task_started"):
+        return
+    state["chatter_task_started"] = True
+
+    while True:
+        theme = get_current_theme(state, config)
+        rotation = get_today_rotation(state, config)
+        online = [s["name"] for s in config["rotation"] if is_sibling_online(s["name"], state, config)]
+
+        if len(online) >= 2:
+            # Attempt a few casual pings per cycle
+            attempts = random.randint(1, 2)
+            for _ in range(attempts):
+                talker = random.choice(online)
+                # Don't bias lead every time; anyone can start chatter while online
+                targets = [x for x in online if x != talker]
+                if not targets:
+                    continue
+                target = random.choice(targets)
+                if random.random() < 0.25:  # 25% chance per attempt
+                    try:
+                        msg = await generate_llm_reply(
+                            sister=talker,
+                            user_message=(
+                                f"You are {talker}. Send a short, natural 1–2 sentence casual message "
+                                f"to {target} in your style. Keep it relevant to daily life or the theme."
+                            ),
+                            theme=theme,
+                            role="sister",
+                            history=[],
+                        )
+                        if msg:
+                            await post_to_family(msg, sender=talker, sisters=sisters, config=config)
+                            log_event(f"[CHATTER] {talker} pinged {target}")
+                    except Exception as e:
+                        log_event(f"[ERROR] chatter {talker}->{target}: {e}")
+
+        # Sleep until next light chatter window
+        nap = random.randint(CHATTER_MIN_SLEEP, CHATTER_MAX_SLEEP)
+        await asyncio.sleep(nap)
+
+
+def ensure_chatter_loop(state, config, sisters):
+    """Helper called by main or startup to ensure continuous chatter."""
+    if not state.get("chatter_task_started"):
+        asyncio.create_task(sibling_chatter_loop(state, config, sisters))
+
+
+# ---------------- Rituals (morning/night) ----------------
 async def send_morning_message(state, config, sisters):
-    """Lead sister posts a morning message at 06:00 with today’s full workout."""
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
-    lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
+    lead, supports = rotation["lead"], rotation["supports"]
 
+    # Lead message
     intro = PERSONA_TONES.get(lead, {}).get("intro_morning", "Good morning.")
     try:
         lead_msg = await generate_llm_reply(
@@ -114,20 +230,21 @@ async def send_morning_message(state, config, sisters):
             role="lead",
             history=[],
         )
-        lead_msg = _strip_leading_name_prefix(lead, lead_msg)
+        if not lead_msg:
+            lead_msg = intro
     except Exception:
         lead_msg = intro
 
-    # Add today’s workout block (formatted by workouts.py)
-    workout_block = get_today_workout()
-    lead_msg = f"{lead_msg}\n\n🏋️ Today’s workout:\n{workout_block}"
+    # Add today's workout (4-day rotation comes from workouts.get_today_workout)
+    today_block = get_today_workout()
+    lead_msg += f"\n\n🏋️ Today’s workout:\n{today_block}"
 
     await post_to_family(lead_msg, sender=lead, sisters=sisters, config=config)
     append_ritual_log(lead, "lead", theme, lead_msg)
 
-    # Optional supporters
+    # A couple of supporters may chime in
     for s in supports:
-        if random.random() < 0.7:
+        if is_sibling_online(s, state, config) and random.random() < 0.7:
             reply = await generate_llm_reply(
                 sister=s,
                 user_message="Short supportive morning comment, 1–2 sentences.",
@@ -136,19 +253,20 @@ async def send_morning_message(state, config, sisters):
                 history=[],
             )
             if reply:
-                reply = _strip_leading_name_prefix(s, reply)
                 await post_to_family(reply, sender=s, sisters=sisters, config=config)
                 append_ritual_log(s, "support", theme, reply)
 
-    # Advance who’s lead/rest
+    # Allow casual inter-sister replies to the lead's post
+    asyncio.create_task(inter_sister_replies(state, config, sisters, lead, lead_msg, theme))
+
+    # Advance rotation after morning ritual
     state["rotation_index"] = state.get("rotation_index", 0) + 1
-    log_event(f"[SCHEDULER] Morning message completed with {lead} as lead")
+
 
 async def send_night_message(state, config, sisters):
-    """Lead sister posts a night message at 22:00 with tomorrow’s workout preview."""
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
-    lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
+    lead, supports = rotation["lead"], rotation["supports"]
 
     intro = PERSONA_TONES.get(lead, {}).get("intro_night", "Good night.")
     try:
@@ -159,20 +277,22 @@ async def send_night_message(state, config, sisters):
             role="lead",
             history=[],
         )
-        lead_msg = _strip_leading_name_prefix(lead, lead_msg)
+        if not lead_msg:
+            lead_msg = intro
     except Exception:
         lead_msg = intro
 
-    # Add tomorrow’s workout block
+    # Add tomorrow's workout
     tomorrow = datetime.now().date() + timedelta(days=1)
     tomorrow_block = get_today_workout(tomorrow)
-    lead_msg = f"{lead_msg}\n\n🌙 Tomorrow’s workout:\n{tomorrow_block}"
+    lead_msg += f"\n\n🌙 Tomorrow’s workout:\n{tomorrow_block}"
 
     await post_to_family(lead_msg, sender=lead, sisters=sisters, config=config)
     append_ritual_log(lead, "lead", theme, lead_msg)
 
+    # Some supporters may add a reflection
     for s in supports:
-        if random.random() < 0.6:
+        if is_sibling_online(s, state, config) and random.random() < 0.6:
             reply = await generate_llm_reply(
                 sister=s,
                 user_message="Short supportive night comment, 1–2 sentences.",
@@ -181,200 +301,190 @@ async def send_night_message(state, config, sisters):
                 history=[],
             )
             if reply:
-                reply = _strip_leading_name_prefix(s, reply)
                 await post_to_family(reply, sender=s, sisters=sisters, config=config)
                 append_ritual_log(s, "support", theme, reply)
 
-    log_event(f"[SCHEDULER] Night message completed with {lead} as lead")
+    # Post-lead replies
+    asyncio.create_task(inter_sister_replies(state, config, sisters, lead, lead_msg, theme))
 
-# ---------------- Spontaneous tasks ----------------
-def _spontaneous_ok_today(state) -> bool:
-    """Enforce 1+1 rule: max one task per day and not on consecutive days."""
-    today = datetime.now().date()
-    last = state.get("last_spontaneous_task")  # iso date string or None
-    if last is None:
-        return True
+
+# ---------------- Spontaneous tasks (1 per day, hidden duration end-notice) ----------------
+def _extract_duration_seconds(text: str) -> Optional[int]:
+    m = _DURATION_REGEX.search(text or "")
+    if not m:
+        return None
+    val = int(m.group(1))
+    unit = m.group(2).lower()
+    if unit.startswith("h"):
+        return val * 3600
+    return val * 60
+
+
+async def _notify_end_after(sister_name: str, seconds: int, sisters, config: Dict):
+    seed = PERSONA_TONES.get(sister_name, {}).get("closing", "Your task is complete. You may stop now.")
+    # Occasionally let LLM rephrase the closing in-voice, still short
     try:
-        last_date = datetime.fromisoformat(last).date()
+        if random.random() < 0.5:
+            alt = await generate_llm_reply(
+                sister=sister_name,
+                user_message=f"{sister_name}: Rewrite this as a single short line in your voice: \"{seed}\"",
+                theme=None,
+                role="lead",
+                history=[],
+            )
+            if alt:
+                seed = alt.strip()
     except Exception:
-        try:
-            last_date = datetime.strptime(last, "%Y-%m-%d").date()
-        except Exception:
-            return True
-    if last_date == today:
-        return False  # already assigned today
-    if last_date == (today - timedelta(days=1)):
-        return False  # consecutive-day block
-    return True
+        pass
 
-async def _notify_task_end(state, sisters, config, sister_name: str, duration_seconds: int):
-    """Wait duration and post a single end notice in sister’s voice, without revealing duration."""
-    async def _runner():
-        try:
-            await asyncio.sleep(duration_seconds)
-            end_line = PERSONA_TONES.get(sister_name, {}).get("end_line", "Your task is complete. You may stop now.")
-            try:
-                stylized = await generate_llm_reply(
-                    sister=sister_name,
-                    user_message=f"{sister_name}: Rewrite this as one short sentence in your voice, do not mention time: \"{end_line}\"",
-                    theme=None,
-                    role="lead",
-                    history=[],
-                )
-                if stylized:
-                    end_line = _strip_leading_name_prefix(sister_name, stylized)
-            except Exception:
-                pass
-            await post_to_family(end_line, sender=sister_name, sisters=sisters, config=config)
-            log_event(f"[TASK-END] {sister_name} posted end-of-task notice.")
-        except asyncio.CancelledError:
-            log_event("[TASK-END] End notice cancelled.")
-        except Exception as e:
-            log_event(f"[TASK-END] Error: {e}")
+    await asyncio.sleep(max(1, seconds))
+    try:
+        await post_to_family(f"{sister_name}: {seed}", sender=sister_name, sisters=sisters, config=config)
+        log_event(f"[TASK-END] {sister_name} posted end notice (duration hidden).")
+    except Exception as e:
+        log_event(f"[TASK-END] Error posting end notice: {e}")
 
-    key = f"{datetime.now().date().isoformat()}_{sister_name}"
-    task = asyncio.create_task(_runner())
-    state.setdefault("spontaneous_end_tasks", {})[key] = task
 
 async def send_spontaneous_task(state, config, sisters):
-    """
-    Try to assign one spontaneous task now (if allowed).
-    The lead sister for the current rotation assigns; duration (if detected) triggers an end notice.
-    """
-    spont_cfg = config.get("spontaneous_chat", {})
-    if not spont_cfg.get("enabled", True):
-        return
-    if not _spontaneous_ok_today(state):
+    """At most 1 sister-assigned task per day. If none chosen, do nothing."""
+    today_key = datetime.now().date().isoformat()
+    if state.get("spontaneous_task_day") == today_key:
+        return  # already assigned today
+
+    theme = get_current_theme(state, config)
+    rotation = get_today_rotation(state, config)
+    # Candidate sisters: online at call time
+    online_sisters = [s["name"] for s in config["rotation"] if is_sibling_online(s["name"], state, config)]
+    if not online_sisters:
         return
 
-    # Chance to assign when the loop wakes up
-    base_chance = float(spont_cfg.get("reply_chance", 0.35))
-    if random.random() > base_chance:
+    # 30% base chance to assign; you can tune this or gate by config
+    if random.random() >= 0.30:
         return
+
+    chooser = random.choice(online_sisters)
+    # A few archetypal tasks; can be themed by sister
+    archetypes = {
+        "Cassandra": [
+            "Put your plug in and hold it until I say otherwise.",
+            "Do a 20-minute tidy of your space. Quiet and focused.",
+            "Posture drill: shoulders down, core on, 15 minutes."
+        ],
+        "Ivy": [
+            "Wear something cute and send a quick check-in selfie (no face needed).",
+            "Hold a wall sit and tell me when you break. No fibbing~",
+            "Practice your best curtsey in the mirror for a few minutes."
+        ],
+        "Aria": [
+            "Journal three lines about your goals today.",
+            "Read for ten unbroken minutes; then share one nice line.",
+            "Light stretch break; breathe deeply and unwind."
+        ],
+        "Selene": [
+            "Make tea and drink it slowly while you breathe.",
+            "Moisturize and do gentle stretches; tell me how you feel.",
+            "Set a calm playlist and tidy one small area."
+        ],
+    }
+    options = archetypes.get(chooser, archetypes["Aria"])
+    task_text = random.choice(options)
+
+    # Compose directive
+    directive = await generate_llm_reply(
+        sister=chooser,
+        user_message=(
+            f"Write a single short directive in your voice based on this: \"{task_text}\". "
+            f"Do NOT include a duration. Be clear and kind if {chooser} is kind; strict if strict."
+        ),
+        theme=theme,
+        role="lead",
+        history=[],
+    )
+    if not directive:
+        directive = f"{chooser}: {task_text}"
+
+    await post_to_family(directive, sender=chooser, sisters=sisters, config=config)
+    log_event(f"[SPONTANEOUS] {chooser} assigned: {directive}")
+
+    # Mark the day used
+    state["spontaneous_task_day"] = today_key
+
+    # Hidden duration end-notice if the *text the user writes later* includes a duration.
+    # We also support implicit durations if the archetype implies it; we keep it simple:
+    implied_secs = None
+    if "posture" in task_text.lower():
+        implied_secs = 15 * 60
+    elif "read for ten" in task_text.lower():
+        implied_secs = 10 * 60
+    elif "20-minute tidy" in task_text.lower():
+        implied_secs = 20 * 60
+
+    if implied_secs:
+        asyncio.create_task(_notify_end_after(chooser, implied_secs, sisters, config))
+
+
+# ---------------- Message handling (user -> sisters) ----------------
+def _add_to_history(state, channel_id, author, content):
+    hist = state.setdefault("history", {}).setdefault(channel_id, [])
+    hist.append((author, content))
+    if len(hist) > HISTORY_LIMIT:
+        hist[:] = hist[-HISTORY_LIMIT:]
+
+
+async def handle_sister_message(state, config, sisters, author: str, content: str, channel_id: int):
+    """Main handler used by main.py for inbound messages in the family channel."""
+    _add_to_history(state, channel_id, author, content)
 
     rotation = get_today_rotation(state, config)
-    lead = rotation["lead"]
     theme = get_current_theme(state, config)
 
-    prompt = (
-        f"{lead}: Propose a single-sentence task to assign right now. "
-        f"Do not state an exact duration. Keep it clear, actionable, matching your persona. "
-        f"Categories may include posture, light discipline, service, or training."
-    )
-    try:
-        task_line = await generate_llm_reply(
-            sister=lead,
-            user_message=prompt,
-            theme=theme,
-            role="lead",
-            history=[],
-        )
-        task_line = _strip_leading_name_prefix(lead, task_line)
-    except Exception as e:
-        log_event(f"[SPONT] LLM error: {e}")
-        return
-
-    await post_to_family(task_line, sender=lead, sisters=sisters, config=config)
-    log_event(f"[SPONT] {lead} assigned: {task_line}")
-
-    # Record today as having assigned a spontaneous task (1+1 rule)
-    state["last_spontaneous_task"] = datetime.now().date().isoformat()
-    state["last_spontaneous_sister"] = lead
-
-    # If a duration phrase slipped in, schedule an end notice (without revealing duration)
-    seconds = _extract_duration_seconds(task_line)
-    if seconds and seconds > 0:
-        await _notify_task_end(state, sisters, config, lead, seconds)
-
-# ---------------- Chat handler ----------------
-async def handle_sister_message(state, config, sisters, author, content, channel_id):
-    """
-    Called from main.py on every user message in the family channel.
-    Basic lead/support/rest selection with minimal throttling (rotation logic is handled elsewhere).
-    """
-    add_to_history(state, channel_id, author, content)
-
-    rotation = get_today_rotation(state, config)
-    name_choices = [rotation["lead"]] + rotation["supports"] + [rotation["rest"]]
-    weights = [0.9] + [0.5] * len(rotation["supports"]) + [0.15]
-    sister_name = random.choices(name_choices, weights=weights, k=1)[0]
-
-    style_hint = (
-        "Reply in 2–4 sentences, guiding the conversation."
-        if sister_name == rotation["lead"]
-        else ("Reply in 1–2 sentences, playful or supportive."
-              if sister_name in rotation["supports"]
-              else "Reply briefly, 1 short remark.")
-    )
-
+    # Weighted pick from recent messages (oldest higher weight) to avoid reply spam to latest only
     history = state["history"].get(channel_id, [])
-    short_context = "\n".join(f"{a}: {c}" for a, c in history[-3:])
-
-    try:
-        reply = await generate_llm_reply(
-            sister=sister_name,
-            user_message=f"Most recent message from {author}: \"{content}\"\nContext:\n{short_context}\n{style_hint}",
-            theme=get_current_theme(state, config),
-            role="support" if sister_name != rotation["lead"] else "lead",
-            history=history[-HISTORY_LIMIT:],
-        )
-    except Exception as e:
-        log_event(f"[CHAT] LLM error for {sister_name}: {e}")
+    if not history:
         return
 
-    if reply:
-        reply = _strip_leading_name_prefix(sister_name, reply)
-        await post_to_family(reply, sender=sister_name, sisters=sisters, config=config)
-        append_ritual_log(sister_name, "chat", get_current_theme(state, config), reply)
+    # Each bot decides to reply based on role and being online
+    for bot in sisters:
+        name = bot.sister_info["name"]
+        if not is_sibling_online(name, state, config):
+            continue
 
-# ---------------- Daily scheduler (fixed times) ----------------
-async def scheduler_loop(state, config, sisters):
-    """
-    Fires morning at 06:00 and night at 22:00 every day.
-    Uses a simple sleep-until-next-target approach to avoid drift.
-    """
-    SCHEDULE = [(6, 0, send_morning_message), (22, 0, send_night_message)]
-    while True:
-        now = datetime.now()
-        waits = []
-        for hour, minute, func in SCHEDULE:
-            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            if target <= now:
-                target += timedelta(days=1)
-            waits.append((target - now, func, hour, minute))
-        delta, func, hour, minute = min(waits, key=lambda t: t[0])
-        sleep_s = max(1, int(delta.total_seconds()))
-        log_event(f"[SCHEDULER] Sleeping ~{sleep_s}s until {hour:02d}:{minute:02d} for {func.__name__}")
-        await asyncio.sleep(sleep_s)
+        if name == rotation["lead"]:
+            role = "lead"
+            should_reply = True
+            style_hint = "Reply in 2–4 sentences, guiding the conversation."
+        elif name in rotation["supports"]:
+            role = "support"
+            should_reply = random.random() < 0.6
+            style_hint = "Reply in 1–2 sentences, playful or supportive."
+        else:
+            role = "rest"
+            should_reply = random.random() < 0.2
+            style_hint = "Reply briefly, 1 short remark."
+
+        if not should_reply:
+            continue
+
+        weights = list(range(len(history), 0, -1))  # oldest highest
+        pick_author, pick_content = random.choices(history, weights=weights, k=1)[0]
+
         try:
-            await func(state, config, sisters)
+            reply = await generate_llm_reply(
+                sister=name,
+                user_message=f"{pick_author}: {pick_content}\n{style_hint}",
+                theme=theme,
+                role=role,
+                history=history,
+            )
+            if reply:
+                await post_to_family(reply, sender=name, sisters=sisters, config=config)
         except Exception as e:
-            log_event(f"[SCHEDULER] Error in scheduled task {func.__name__}: {e}")
+            log_event(f"[ERROR] LLM reply failed for {name}: {e}")
+            continue
 
-# ---------------- Spontaneous loop (random intervals) ----------------
-async def spontaneous_loop(state, config, sisters):
-    """
-    Wakes at random intervals during the day and attempts to assign at most ONE spontaneous task per day,
-    honoring the 1+1 rule (no consecutive days). Interval bounds come from config.spontaneous_chat.
-    """
-    spont_cfg = config.get("spontaneous_chat", {})
-    if not spont_cfg.get("enabled", True):
-        log_event("[SPONT] spontaneous_chat disabled.")
-        return
 
-    min_minutes = int(spont_cfg.get("min_minutes", 45))
-    max_minutes = int(spont_cfg.get("max_minutes", 90))
-    if max_minutes < min_minutes:
-        max_minutes = min_minutes
-
-    while True:
-        # Pick a random sleep in the configured window
-        wait_min = random.randint(min_minutes, max_minutes)
-        log_event(f"[SPONT] Sleeping ~{wait_min} minutes until next attempt.")
-        await asyncio.sleep(wait_min * 60)
-
-        # Try to assign (1+1 rule and chance handled inside)
-        try:
-            await send_spontaneous_task(state, config, sisters)
-        except Exception as e:
-            log_event(f"[SPONT] Error in send_spontaneous_task: {e}")
+# ---------------- Public helpers for main ----------------
+def ensure_daily_systems(state, config, sisters):
+    """Call once at startup to initialize daily schedules & chatter."""
+    assign_daily_schedule(state, config)
+    ensure_chatter_loop(state, config, sisters)
