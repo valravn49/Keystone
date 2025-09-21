@@ -1,7 +1,7 @@
 # workouts.py
 import os
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, date
 
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -9,60 +9,62 @@ os.makedirs(DATA_DIR, exist_ok=True)
 CONFIG_FILE = os.path.join(DATA_DIR, "workouts_config.json")
 DATA_FILE = os.path.join(DATA_DIR, "workouts_data.json")
 
-# 4-Day Rotation Plan
-ROTATION = {
+# Default kcal/min rates
+WORKOUTS = {
+    "running": 10,
+    "cycling": 8,
+    "yoga": 4,
+    "pushups": 7,
+    "squats": 6,
+    "plank": 5,
+    "stretching": 3,
+    "cardio": 8,
+    "posture": 2,
+}
+
+# 4-day rotation cycle
+WORKOUT_ROTATION = {
+    0: {
+        "title": "Upper Body Strength",
+        "items": [
+            "Push-ups – 3 sets of 12",
+            "Plank – 3 × 45 sec",
+            "Chair Dips – 3 × 10",
+        ],
+    },
     1: {
-        "title": "🌸 Waist Slimming & Core Control",
-        "exercises": [
-            ("Standing Twists", "1 min", "2 sets"),
-            ("Russian Twists (no weight)", "30 sec", "2 sets"),
-            ("Leg Raises", "10–12 reps", "2–3 sets"),
-            ("Plank (elbows)", "30–60 sec", "2 sets"),
-            ("Side Plank (each side)", "20–30 sec", "2 sets"),
+        "title": "Lower Body Strength",
+        "items": [
+            "Squats – 3 sets of 15",
+            "Lunges – 3 × 12 each leg",
+            "Glute Bridges – 3 × 15",
         ],
     },
     2: {
-        "title": "🍑 Leg & Booty Shaping",
-        "exercises": [
-            ("Glute Bridges", "15 reps", "3 sets"),
-            ("Donkey Kicks (each leg)", "15 reps", "2 sets"),
-            ("Fire Hydrants (each leg)", "15 reps", "2 sets"),
-            ("Bodyweight Squats", "15–20 reps", "3 sets"),
-            ("Wall Sit", "30–60 sec", "2 sets"),
+        "title": "Core & Mixed Cardio",
+        "items": [
+            "Mountain Climbers – 3 × 30 sec",
+            "Sit-ups – 3 × 15",
+            "Burpees – 3 × 10",
         ],
     },
     3: {
-        "title": "💪 Upper Body Toning (Lean, Not Buff)",
-        "exercises": [
-            ("Knee Pushups / Incline Pushups", "10–15 reps", "2–3 sets"),
-            ("Wall Angels (posture work)", "10 reps", "2 sets"),
-            ("Arm Circles (small & slow)", "1 min", "2 sets"),
-            ("Shoulder Taps (from plank)", "30 sec", "2 sets"),
-        ],
-    },
-    4: {
-        "title": "✨ Posture, Cardio & Feminine Stretching",
-        "exercises": [
-            ("Warm-up: Arm Circles", "30 sec each direction", "—"),
-            ("Warm-up: Leg Swings", "30 sec each leg", "—"),
-            ("Warm-up: Hip Circles", "30 sec each direction", "—"),
-            ("Jumping Jacks", "1 min", "—"),
-            ("Dynamic Toe Touches", "1 min", "—"),
-            ("Cat-Cow (back & hips)", "5–10 reps", "—"),
-            ("Standing Forward Fold", "20–30 sec", "—"),
-            ("Cobra Stretch (abs)", "20–30 sec", "—"),
-            ("Pigeon Pose (hips & glutes)", "20–30 sec", "—"),
-            ("Shoulder Stretches", "20–30 sec", "—"),
-            ("Neck Rolls & Breathing", "5 deep breaths", "—"),
+        "title": "Posture, Cardio & Stretching",
+        "items": [
+            "Light Jog – 10 min",
+            "Posture Alignment Drills – 5 min",
+            "Full-body Stretch Routine – 10 min",
         ],
     },
 }
 
+# Data storage
 data = {"workout_log": []}
 
 
+# ---------------- Persistence ----------------
 def _load_data():
-    global data
+    global data, WORKOUTS
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -70,39 +72,67 @@ def _load_data():
         except Exception:
             data = {"workout_log": []}
 
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                WORKOUTS = json.load(f)
+        except Exception:
+            pass
+
 
 def _save_data():
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(WORKOUTS, f, indent=2)
 
 
-def get_today_index(date: datetime = None) -> int:
-    """Return which day in the 4-day cycle today is (1–4)."""
-    if date is None:
-        date = datetime.now().date()
-    day_number = (date.toordinal() % 4) + 1
-    return day_number
+# ---------------- Validation & Calories ----------------
+def validate_workout(name: str) -> bool:
+    return name.lower() in WORKOUTS
 
 
-def get_today_workout(date: datetime = None) -> str:
-    """Return the formatted workout plan for today (or given date)."""
-    idx = get_today_index(date)
-    block = ROTATION[idx]
-
-    header = f"{block['title']}\n"
-    lines = [f"• {ex[0]} — {ex[1]} ({ex[2]})" for ex in block["exercises"]]
-    return header + "\n".join(lines)
+def calculate_calories_burned(name: str, duration: int) -> int:
+    """duration in minutes"""
+    rate = WORKOUTS.get(name.lower())
+    if rate is None:
+        raise ValueError(f"Unknown workout: {name}")
+    return rate * duration
 
 
-def log_workout(user: str, date: datetime = None):
-    """Log that the user completed today’s workout."""
-    idx = get_today_index(date)
-    block = ROTATION[idx]
+def add_workout(name: str, rate: int):
+    WORKOUTS[name.lower()] = rate
+    _save_data()
+
+
+def remove_workout(name: str):
+    name = name.lower()
+    if name in WORKOUTS:
+        del WORKOUTS[name]
+    _save_data()
+
+
+def list_workouts() -> str:
+    if not WORKOUTS:
+        return "⚠️ No workouts defined."
+
+    header = f"{'Workout':<15} | {'kcal/min':>8}"
+    sep = "-" * len(header)
+    rows = [f"{w:<15} | {c:>8}" for w, c in WORKOUTS.items()]
+    return "\n".join([header, sep] + rows)
+
+
+# ---------------- Logging & Summaries ----------------
+def log_workout(user: str, name: str, duration: int):
+    if not validate_workout(name):
+        raise ValueError(f"Unknown workout: {name}")
+    calories = calculate_calories_burned(name, duration)
     entry = {
         "timestamp": datetime.now().isoformat(),
         "user": user,
-        "workout_day": idx,
-        "title": block["title"],
+        "workout": name,
+        "duration": duration,
+        "calories": calories,
     }
     data["workout_log"].append(entry)
     _save_data()
@@ -111,18 +141,38 @@ def log_workout(user: str, date: datetime = None):
 
 def get_workout_summary():
     today = datetime.now().date()
-    logs = [
+    workouts_today = [
         w for w in data["workout_log"]
         if datetime.fromisoformat(w["timestamp"]).date() == today
     ]
-    if not logs:
+    if not workouts_today:
         return "📊 No workouts logged today."
 
-    summary = f"📊 Workout Summary for {today}:\n"
-    for w in logs:
-        summary += f"- {w['user']} completed: {w['title']}\n"
+    total_minutes = sum(w["duration"] for w in workouts_today)
+    total_calories = sum(w["calories"] for w in workouts_today)
+
+    summary = (
+        f"📊 Workout Summary for {today}:\n"
+        f"- Sessions: {len(workouts_today)}\n"
+        f"- Total Minutes: {total_minutes}\n"
+        f"- Total Calories Burned: {total_calories}\n"
+    )
     return summary
 
 
-# Load at startup
+# ---------------- Rotation ----------------
+def get_today_workout(target_date: date = None) -> str:
+    """Return workout block based on 4-day rotation."""
+    if target_date is None:
+        target_date = datetime.now().date()
+
+    day_index = (target_date.toordinal() % 4)
+    block = WORKOUT_ROTATION[day_index]
+
+    lines = [f"**{block['title']}**"]
+    lines.extend([f"- {item}" for item in block["items"]])
+    return "\n".join(lines)
+
+
+# ---------------- Init ----------------
 _load_data()
