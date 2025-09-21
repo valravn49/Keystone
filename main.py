@@ -1,10 +1,11 @@
-# main.py
 import os
 import json
 import asyncio
 import datetime
 import discord
 from discord.ext import commands, tasks
+from fastapi import FastAPI
+from fastapi.responses import PlainTextResponse
 
 import sisters_behavior  # ✅ full module
 from sisters_behavior import (
@@ -13,7 +14,7 @@ from sisters_behavior import (
     send_spontaneous_task,
 )
 from aria_commands import setup_aria_commands
-from logger import log_event
+from logger import log_event, LOG_FILE
 
 # ---------------- Load Config ----------------
 with open("config.json", "r", encoding="utf-8") as f:
@@ -117,5 +118,31 @@ def run_all():
     asyncio.get_event_loop().run_forever()
 
 
-if __name__ == "__main__":
-    run_all()
+# ---------------- FastAPI App ----------------
+app = FastAPI()
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(run_all())
+    log_event("[SYSTEM] FastAPI + Discord bots running.")
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+@app.get("/status")
+async def status():
+    return {
+        "bots": [s.sister_info["name"] for s in sisters],
+        "rotation_index": state["rotation_index"],
+        "theme_index": state["theme_index"],
+    }
+
+@app.get("/logs", response_class=PlainTextResponse)
+async def get_logs(lines: int = 50):
+    try:
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            all_lines = f.readlines()
+        return "".join(all_lines[-lines:])
+    except FileNotFoundError:
+        return "[LOGGER] No memory_log.txt found."
