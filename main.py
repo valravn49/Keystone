@@ -1,3 +1,4 @@
+# main.py
 import os
 import json
 import asyncio
@@ -5,7 +6,6 @@ import datetime
 import discord
 from discord.ext import commands, tasks
 from fastapi import FastAPI
-from fastapi.responses import PlainTextResponse
 
 import sisters_behavior  # ✅ full module
 from sisters_behavior import (
@@ -14,7 +14,7 @@ from sisters_behavior import (
     send_spontaneous_task,
 )
 from aria_commands import setup_aria_commands
-from logger import log_event, LOG_FILE
+from logger import log_event
 
 # ---------------- Load Config ----------------
 with open("config.json", "r", encoding="utf-8") as f:
@@ -107,42 +107,23 @@ async def before_spontaneous():
 
 
 # ---------------- Run ----------------
-def run_all():
+async def run_all():
     for bot in sisters:
         asyncio.create_task(bot.start(os.getenv(bot.sister_info["env_var"])))
 
     morning_task.start()
     night_task.start()
     spontaneous_task.start()
+    log_event("[SYSTEM] All tasks started (FastAPI loop).")
 
-    asyncio.get_event_loop().run_forever()
 
-
-# ---------------- FastAPI App ----------------
+# ---------------- FastAPI ----------------
 app = FastAPI()
 
 @app.on_event("startup")
 async def startup_event():
-    asyncio.create_task(run_all())
-    log_event("[SYSTEM] FastAPI + Discord bots running.")
+    await run_all()
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
-
-@app.get("/status")
-async def status():
-    return {
-        "bots": [s.sister_info["name"] for s in sisters],
-        "rotation_index": state["rotation_index"],
-        "theme_index": state["theme_index"],
-    }
-
-@app.get("/logs", response_class=PlainTextResponse)
-async def get_logs(lines: int = 50):
-    try:
-        with open(LOG_FILE, "r", encoding="utf-8") as f:
-            all_lines = f.readlines()
-        return "".join(all_lines[-lines:])
-    except FileNotFoundError:
-        return "[LOGGER] No memory_log.txt found."
