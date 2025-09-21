@@ -2,16 +2,16 @@
 import os
 import json
 import asyncio
+import datetime
 import discord
 from discord.ext import commands, tasks
 
-import sisters_behavior
+import sisters_behavior  # ✅ full module
 from sisters_behavior import (
     send_morning_message,
     send_night_message,
     send_spontaneous_task,
 )
-import will_behavior  # ✅ Will’s unique behavior module
 from aria_commands import setup_aria_commands
 from logger import log_event
 
@@ -34,14 +34,13 @@ state = {
 }
 
 # ---------------- Discord Setup ----------------
-class FamilyBot(commands.Bot):
+class SisterBot(commands.Bot):
     def __init__(self, sister_info):
         super().__init__(command_prefix="!", intents=intents)
         self.sister_info = sister_info
 
     async def setup_hook(self):
-        # Only Aria gets slash commands for now
-        if self.sister_info["name"].lower() == "aria":
+        if self.sister_info["name"] == "Aria":
             setup_aria_commands(
                 self.tree,
                 state,
@@ -52,15 +51,18 @@ class FamilyBot(commands.Bot):
             )
             await self.tree.sync()
 
-# Create bot instances for all configured siblings
-sisters = [FamilyBot(s) for s in config["rotation"]]
+# Create bot instances for each sister
+sisters = [SisterBot(s) for s in config["rotation"]]
+
 
 # ---------------- Events ----------------
 @sisters[0].event
 async def on_ready():
-    log_event("[SYSTEM] The family is waking up...")
+    log_event("[SYSTEM] All sisters are waking up...")
     for bot in sisters:
-        log_event(f"{bot.sister_info['name']} logged in as {bot.user}")
+        if bot.user:
+            log_event(f"{bot.sister_info['name']} logged in as {bot.user}")
+
 
 @sisters[0].event
 async def on_message(message):
@@ -71,28 +73,24 @@ async def on_message(message):
     author = str(message.author)
     content = message.content
 
-    # Sisters handle normally
     await sisters_behavior.handle_sister_message(
         state, config, sisters, author, content, channel_id
     )
 
-    # Will decides separately if he wants to speak up
-    await will_behavior.maybe_will_reply(
-        state, config, sisters, author, content, channel_id
-    )
 
 # ---------------- Tasks ----------------
-@tasks.loop(time=[discord.utils.utcnow().replace(hour=8, minute=0, second=0, microsecond=0)])
+@tasks.loop(time=datetime.time(hour=6, minute=0))
 async def morning_task():
     await send_morning_message(state, config, sisters)
 
-@tasks.loop(time=[discord.utils.utcnow().replace(hour=12, minute=0, second=0, microsecond=0)])
+@tasks.loop(time=datetime.time(hour=22, minute=0))
 async def night_task():
     await send_night_message(state, config, sisters)
 
 @tasks.loop(minutes=60)
 async def spontaneous_task():
     await send_spontaneous_task(state, config, sisters)
+
 
 @morning_task.before_loop
 async def before_morning():
@@ -106,6 +104,7 @@ async def before_night():
 async def before_spontaneous():
     await asyncio.sleep(10)
 
+
 # ---------------- Run ----------------
 def run_all():
     for bot in sisters:
@@ -116,6 +115,7 @@ def run_all():
     spontaneous_task.start()
 
     asyncio.get_event_loop().run_forever()
+
 
 if __name__ == "__main__":
     run_all()
