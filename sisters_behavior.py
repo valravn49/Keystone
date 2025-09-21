@@ -38,26 +38,25 @@ _DURATION_REGEX = re.compile(r"(\d+)\s*(hours|hour|hrs|hr|h|minutes|minute|mins|
 
 def _extract_duration_seconds(text: str):
     """Return duration in seconds if present; otherwise None."""
-    m = _DURATION_REGEX.search(text or "")
+    if not text:
+        return None
+    m = _DURATION_REGEX.search(text)
     if not m:
         return None
     val = int(m.group(1))
     unit = m.group(2).lower()
-    if unit.startswith("h"):
-        return val * 3600
-    return val * 60
+    return val * 3600 if unit.startswith("h") else val * 60
 
 def _strip_leading_name_prefix(sister_name: str, text: str) -> str:
     """
     Prevent outputs like 'aria:' at the start if the LLM mirrors a name.
-    We remove '<name>:' if present at the start; keep everything else intact.
+    Remove only a leading '<name>:' once; preserve the rest.
     """
     if not text:
         return text
     lowered = text.strip().lower()
     prefix = f"{sister_name.lower()}:"
     if lowered.startswith(prefix):
-        # remove only the leading '<name>:' while preserving original casing/spaces after it
         parts = text.split(":", 1)
         return parts[1].lstrip() if len(parts) > 1 else text
     return text
@@ -190,7 +189,7 @@ async def send_night_message(state, config, sisters):
 
 # ---------------- Spontaneous tasks ----------------
 def _spontaneous_ok_today(state) -> bool:
-    """Enforce 1+1 rule: at most one task per day, and not on consecutive days."""
+    """Enforce 1+1 rule: max one task per day and not on consecutive days."""
     today = datetime.now().date()
     last = state.get("last_spontaneous_task")  # iso date string or None
     if last is None:
@@ -198,7 +197,6 @@ def _spontaneous_ok_today(state) -> bool:
     try:
         last_date = datetime.fromisoformat(last).date()
     except Exception:
-        # If stored as date string already:
         try:
             last_date = datetime.strptime(last, "%Y-%m-%d").date()
         except Exception:
@@ -206,7 +204,7 @@ def _spontaneous_ok_today(state) -> bool:
     if last_date == today:
         return False  # already assigned today
     if last_date == (today - timedelta(days=1)):
-        return False  # consecutive day blocked
+        return False  # consecutive-day block
     return True
 
 async def _notify_task_end(state, sisters, config, sister_name: str, duration_seconds: int):
@@ -216,7 +214,6 @@ async def _notify_task_end(state, sisters, config, sister_name: str, duration_se
             await asyncio.sleep(duration_seconds)
             end_line = PERSONA_TONES.get(sister_name, {}).get("end_line", "Your task is complete. You may stop now.")
             try:
-                # Give LLM one shot to stylize the single sentence; fallback to end_line
                 stylized = await generate_llm_reply(
                     sister=sister_name,
                     user_message=f"{sister_name}: Rewrite this as one short sentence in your voice, do not mention time: \"{end_line}\"",
@@ -235,39 +232,34 @@ async def _notify_task_end(state, sisters, config, sister_name: str, duration_se
         except Exception as e:
             log_event(f"[TASK-END] Error: {e}")
 
-    # keep a reference so we could cancel if needed in the future
     key = f"{datetime.now().date().isoformat()}_{sister_name}"
     task = asyncio.create_task(_runner())
     state.setdefault("spontaneous_end_tasks", {})[key] = task
 
 async def send_spontaneous_task(state, config, sisters):
     """
-    Possibly assign a spontaneous task (max one per day, not two days in a row).
-    The lead sister for the day assigns; if blocked by 1+1 rule, do nothing.
-    If duration is embedded in the generated line, we schedule a private end notice.
+    Try to assign one spontaneous task now (if allowed).
+    The lead sister for the current rotation assigns; duration (if detected) triggers an end notice.
     """
-    # Respect global toggle if present in config
     spont_cfg = config.get("spontaneous_chat", {})
     if not spont_cfg.get("enabled", True):
         return
-
     if not _spontaneous_ok_today(state):
+        return
+
+    # Chance to assign when the loop wakes up
+    base_chance = float(spont_cfg.get("reply_chance", 0.35))
+    if random.random() > base_chance:
         return
 
     rotation = get_today_rotation(state, config)
     lead = rotation["lead"]
-
-    # Lightly biased chance to actually assign one (avoid daily spam)
-    base_chance = 0.35
-    if random.random() > base_chance:
-        return
-
     theme = get_current_theme(state, config)
-    # Ask LLM to propose a single-sentence command-like task (no explicit times!)
+
     prompt = (
-        f"{lead}: Propose a single-sentence task to assign now. "
-        f"It should be clear and actionable, avoid stating any exact duration. "
-        f"Tone should match your persona. Example categories include posture checks, light discipline, or training."
+        f"{lead}: Propose a single-sentence task to assign right now. "
+        f"Do not state an exact duration. Keep it clear, actionable, matching your persona. "
+        f"Categories may include posture, light discipline, service, or training."
     )
     try:
         task_line = await generate_llm_reply(
@@ -282,16 +274,14 @@ async def send_spontaneous_task(state, config, sisters):
         log_event(f"[SPONT] LLM error: {e}")
         return
 
-    # Post it
     await post_to_family(task_line, sender=lead, sisters=sisters, config=config)
     log_event(f"[SPONT] {lead} assigned: {task_line}")
 
-    # Record today as having assigned a spontaneous task
+    # Record today as having assigned a spontaneous task (1+1 rule)
     state["last_spontaneous_task"] = datetime.now().date().isoformat()
     state["last_spontaneous_sister"] = lead
 
-    # If user included a duration phrase in their own command style, parse it;
-    # in our LLM prompt we asked to avoid durations, but we still support parsing.
+    # If a duration phrase slipped in, schedule an end notice (without revealing duration)
     seconds = _extract_duration_seconds(task_line)
     if seconds and seconds > 0:
         await _notify_task_end(state, sisters, config, lead, seconds)
@@ -306,15 +296,17 @@ async def handle_sister_message(state, config, sisters, author, content, channel
 
     rotation = get_today_rotation(state, config)
     name_choices = [rotation["lead"]] + rotation["supports"] + [rotation["rest"]]
-    # Simple probabilistic selection to see who replies (lead most likely)
     weights = [0.9] + [0.5] * len(rotation["supports"]) + [0.15]
     sister_name = random.choices(name_choices, weights=weights, k=1)[0]
 
-    style_hint = "Reply in 2–4 sentences, guiding the conversation." if sister_name == rotation["lead"] \
-        else ("Reply in 1–2 sentences, playful or supportive." if sister_name in rotation["supports"]
+    style_hint = (
+        "Reply in 2–4 sentences, guiding the conversation."
+        if sister_name == rotation["lead"]
+        else ("Reply in 1–2 sentences, playful or supportive."
+              if sister_name in rotation["supports"]
               else "Reply briefly, 1 short remark.")
+    )
 
-    # Build a concise prompt with the most recent user message and some short context
     history = state["history"].get(channel_id, [])
     short_context = "\n".join(f"{a}: {c}" for a, c in history[-3:])
 
@@ -335,7 +327,7 @@ async def handle_sister_message(state, config, sisters, author, content, channel
         await post_to_family(reply, sender=sister_name, sisters=sisters, config=config)
         append_ritual_log(sister_name, "chat", get_current_theme(state, config), reply)
 
-# ---------------- Daily scheduler ----------------
+# ---------------- Daily scheduler (fixed times) ----------------
 async def scheduler_loop(state, config, sisters):
     """
     Fires morning at 06:00 and night at 22:00 every day.
@@ -344,14 +336,12 @@ async def scheduler_loop(state, config, sisters):
     SCHEDULE = [(6, 0, send_morning_message), (22, 0, send_night_message)]
     while True:
         now = datetime.now()
-        # Compute the next target among today/tomorrow for each scheduled item
         waits = []
         for hour, minute, func in SCHEDULE:
             target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
             if target <= now:
                 target += timedelta(days=1)
             waits.append((target - now, func, hour, minute))
-        # Pick the soonest
         delta, func, hour, minute = min(waits, key=lambda t: t[0])
         sleep_s = max(1, int(delta.total_seconds()))
         log_event(f"[SCHEDULER] Sleeping ~{sleep_s}s until {hour:02d}:{minute:02d} for {func.__name__}")
@@ -360,3 +350,31 @@ async def scheduler_loop(state, config, sisters):
             await func(state, config, sisters)
         except Exception as e:
             log_event(f"[SCHEDULER] Error in scheduled task {func.__name__}: {e}")
+
+# ---------------- Spontaneous loop (random intervals) ----------------
+async def spontaneous_loop(state, config, sisters):
+    """
+    Wakes at random intervals during the day and attempts to assign at most ONE spontaneous task per day,
+    honoring the 1+1 rule (no consecutive days). Interval bounds come from config.spontaneous_chat.
+    """
+    spont_cfg = config.get("spontaneous_chat", {})
+    if not spont_cfg.get("enabled", True):
+        log_event("[SPONT] spontaneous_chat disabled.")
+        return
+
+    min_minutes = int(spont_cfg.get("min_minutes", 45))
+    max_minutes = int(spont_cfg.get("max_minutes", 90))
+    if max_minutes < min_minutes:
+        max_minutes = min_minutes
+
+    while True:
+        # Pick a random sleep in the configured window
+        wait_min = random.randint(min_minutes, max_minutes)
+        log_event(f"[SPONT] Sleeping ~{wait_min} minutes until next attempt.")
+        await asyncio.sleep(wait_min * 60)
+
+        # Try to assign (1+1 rule and chance handled inside)
+        try:
+            await send_spontaneous_task(state, config, sisters)
+        except Exception as e:
+            log_event(f"[SPONT] Error in send_spontaneous_task: {e}")
