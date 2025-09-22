@@ -1,4 +1,3 @@
-# will_behavior.py
 import os
 import json
 import random
@@ -39,13 +38,6 @@ def _read_file_first(path_list: List[str]) -> Optional[str]:
 
 
 def load_will_profile() -> Dict:
-    """
-    Parse Will's profile from a simple TXT format. Expected loose format like:
-      Interests: games, tech, anime
-      Dislikes: drama, arguments
-      Style: casual, teasing, nerdy
-      Triggers: hype, memes, nostalgia
-    """
     text = _read_file_first(DEFAULT_PROFILE_PATHS) or ""
     profile = {
         "interests": ["tech", "games", "anime", "music"],
@@ -95,6 +87,28 @@ async def _post_to_family(message: str, sender: str, sisters, config: Dict):
             break
 
 
+# ---------------- Persona wrapper ----------------
+async def _persona_reply(base_prompt: str, role: str, config: Dict, history: List):
+    """Force Will’s replies to respect his config personality + swearing rules."""
+    will_cfg = next((s for s in config["rotation"] if s["name"] == "Will"), {})
+    personality = will_cfg.get("personality", "Casual, nerdy, sometimes dramatic.")
+    allow_swear = will_cfg.get("swearing_allowed", True)
+
+    prompt = (
+        f"You are Will. Personality: {personality}. "
+        f"{'Swearing is allowed if it feels natural.' if allow_swear else 'Do not swear.'} "
+        f"{base_prompt}"
+    )
+
+    return await generate_llm_reply(
+        sister="Will",
+        user_message=prompt,
+        theme=None,
+        role=role,
+        history=history,
+    )
+
+
 # ---------------- Schedule ----------------
 def assign_will_schedule(state: Dict, config: Dict):
     today = datetime.now().date()
@@ -102,7 +116,6 @@ def assign_will_schedule(state: Dict, config: Dict):
     if state.get(f"{key}_date") == today and state.get(key):
         return state[key]
 
-    # Default or configured ranges
     scfg = (
         config.get("schedules", {}).get("Will")
         or {"wake": [10, 12], "sleep": [0, 2]}
@@ -121,11 +134,6 @@ def assign_will_schedule(state: Dict, config: Dict):
 
 
 def is_will_online(state: Dict, config: Dict) -> bool:
-    # Always-on override
-    for s in config.get("siblings", []):
-        if s["name"] == "Will" and s.get("always_on"):
-            return True
-
     sc = assign_will_schedule(state, config)
     now_hour = datetime.now().hour
     wake, sleep = sc["wake"], sc["sleep"]
@@ -138,7 +146,6 @@ def is_will_online(state: Dict, config: Dict) -> bool:
 
 # ---------------- Chatter Loop ----------------
 async def will_chatter_loop(state: Dict, config: Dict, sisters):
-    """Will occasionally adds a comment if online; more likely on topics he likes."""
     if state.get("will_chatter_started"):
         return
     state["will_chatter_started"] = True
@@ -153,15 +160,12 @@ async def will_chatter_loop(state: Dict, config: Dict, sisters):
             if random.random() < base_p:
                 style = ", ".join(profile.get("style", ["casual"]))
                 try:
-                    msg = await generate_llm_reply(
-                        sister="Will",
-                        user_message=(
-                            f"You're Will. Write a short, natural 1–2 sentence group chat comment. "
-                            f"Keep it {style}. Avoid rituals/rotation. "
-                            f"Light, brotherly tone."
-                        ),
-                        theme=None,
-                        role="sister",
+                    msg = await _persona_reply(
+                        f"Write a short, natural 1–2 sentence group chat comment. "
+                        f"Keep it {style}. Avoid rituals/rotation. "
+                        f"Light, brotherly tone.",
+                        role="support",
+                        config=config,
                         history=[],
                     )
                     if msg:
@@ -174,7 +178,6 @@ async def will_chatter_loop(state: Dict, config: Dict, sisters):
 
 # ---------------- Reactive Handler ----------------
 async def will_handle_message(state: Dict, config: Dict, sisters, author: str, content: str, channel_id: int):
-    """Optional: Call from on_message to let Will react to user/sister messages."""
     if not is_will_online(state, config):
         return
 
@@ -189,26 +192,23 @@ async def will_handle_message(state: Dict, config: Dict, sisters, author: str, c
 
     dramatic = random.random() < DRAMATIC_SHIFT_BASE
     style = ", ".join(profile.get("style", ["casual"]))
+
     if dramatic:
-        prompt = (
-            f"You're Will. {author} said: \"{content}\". "
+        base_prompt = (
+            f"{author} said: \"{content}\". "
             f"React in 1–2 sentences with a dramatic but playful vibe. "
             f"Return to normal tone after this."
         )
     else:
-        prompt = (
-            f"You're Will. {author} said: \"{content}\". "
+        base_prompt = (
+            f"{author} said: \"{content}\". "
             f"Reply in 1–2 casual sentences ({style}). "
             f"Avoid rituals/rotation language."
         )
 
     try:
-        reply = await generate_llm_reply(
-            sister="Will",
-            user_message=prompt,
-            theme=None,
-            role="sister",
-            history=[],
+        reply = await _persona_reply(
+            base_prompt, role="support", config=config, history=[]
         )
         if reply:
             await _post_to_family(reply, "Will", sisters, config)
