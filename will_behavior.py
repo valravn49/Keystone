@@ -6,9 +6,8 @@ from typing import Dict, Optional, List
 
 from llm import generate_llm_reply
 from logger import log_event
-from sisters_behavior import maybe_tease_will  # ✅ tease system hook
+from teasing import maybe_tease_will  # ✅ teasing hook
 
-# Will's dynamic profile loader
 DEFAULT_PROFILE_PATHS = [
     "data/Will_Profile.txt",
     "/mnt/data/Will_Profile.txt",
@@ -16,16 +15,13 @@ DEFAULT_PROFILE_PATHS = [
 
 WILL_REFINEMENTS_LOG = "data/Will_Refinements_Log.txt"
 
-# Chatter pacing (seconds)
 WILL_MIN_SLEEP = 35 * 60
 WILL_MAX_SLEEP = 95 * 60
 
-# Probability boosts
 INTEREST_HIT_BOOST = 0.35
 DRAMATIC_SHIFT_BASE = 0.05
-RANT_CHANCE = 0.10  # baseline rant chance
+RANT_CHANCE = 0.10
 
-# Master favorites pool
 WILL_FAVORITES_POOL = [
     "Legend of Zelda",
     "Final Fantasy",
@@ -101,7 +97,7 @@ def get_rotating_favorites(state: Dict, config: Dict, count: int = 3) -> List[st
     return picks
 
 # ---------------- Messaging ----------------
-async def _post_to_family(message: str, sender: str, sisters, config: Dict, state: Dict = None):
+async def _post_to_family(message: str, sender: str, sisters, config: Dict, state=None):
     for bot in sisters:
         if bot.is_ready() and bot.sister_info["name"] == sender:
             try:
@@ -109,11 +105,8 @@ async def _post_to_family(message: str, sender: str, sisters, config: Dict, stat
                 if channel:
                     await channel.send(message)
                     log_event(f"{sender} posted: {message}")
-
-                    # ✅ trigger teasing if Will posts
                     if sender == "Will" and state is not None:
-                        await maybe_tease_will(state, config, sisters, "Will", message)
-
+                        await maybe_tease_will(state, config, sisters, sender, message)
             except Exception as e:
                 log_event(f"[ERROR] Will send: {e}")
             break
@@ -200,38 +193,4 @@ async def will_chatter_loop(state: Dict, config: Dict, sisters):
                 rant_mode = random.random() < calculate_rant_chance(RANT_CHANCE)
                 try:
                     msg = await _persona_reply("Write a group chat comment.", rant=rant_mode, state=state, config=config)
-                    if msg: await _post_to_family(msg, "Will", sisters, config, state)
-                except Exception as e:
-                    log_event(f"[ERROR] Will chatter: {e}")
-        await asyncio.sleep(random.randint(WILL_MIN_SLEEP, WILL_MAX_SLEEP))
-
-# ---------------- Reactive Handler ----------------
-async def will_handle_message(state: Dict, config: Dict, sisters, author: str, content: str, channel_id: int):
-    if not is_will_online(state, config): return
-
-    profile = load_will_profile()
-    interest_score = _topic_match_score(content, profile.get("interests", []))
-    trigger_score = _topic_match_score(content, profile.get("triggers", []))
-
-    p = 0.15 + (interest_score * INTEREST_HIT_BOOST) + (trigger_score * 0.20)
-    p = min(p, 0.85)
-    if random.random() >= p: return
-
-    rant_chance = calculate_rant_chance(RANT_CHANCE, interest_score, trigger_score)
-    rant_mode = random.random() < rant_chance
-
-    try:
-        reply = await _persona_reply(
-            f"{author} said: \"{content}\". Reply like Will would.",
-            rant=rant_mode, state=state, config=config
-        )
-        if reply: await _post_to_family(reply, "Will", sisters, config, state)
-    except Exception as e:
-        log_event(f"[ERROR] Will reactive: {e}")
-
-# ---------------- Startup Helper ----------------
-def ensure_will_systems(state: Dict, config: Dict, sisters):
-    get_rotating_favorites(state, config)  # ✅ ensure favorites seeded daily
-    assign_will_schedule(state, config)
-    if not state.get("will_chatter_started"):
-        asyncio.create_task(will_chatter_loop(state, config, sisters))
+                    if msg: await _post_to_family(msg, "Will
