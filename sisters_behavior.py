@@ -1,237 +1,244 @@
-import os
 import random
 import asyncio
-from datetime import datetime
-from typing import Dict, Optional, List
+from datetime import datetime, timedelta
 
 from llm import generate_llm_reply
-from logger import log_event
-from sisters_behavior import maybe_tease_will  # ✅ tease system hook
+from logger import log_event, append_ritual_log
+from workouts import get_today_workout
 
-# Will's dynamic profile loader
-DEFAULT_PROFILE_PATHS = [
-    "data/Will_Profile.txt",
-    "/mnt/data/Will_Profile.txt",
-]
+# Persona tones for rituals
+PERSONA_TONES = {
+    "Aria": {
+        "intro_morning": "Good morning — be gentle with yourself today; remember your duties and care.",
+        "intro_night": "Time to rest, sweet one. Reflect kindly on your progress.",
+    },
+    "Selene": {
+        "intro_morning": "Good morning, darling — take things slowly and be kind to your body today.",
+        "intro_night": "Sleep well, my dear. I’ve been thinking of your care and comfort.",
+    },
+    "Cassandra": {
+        "intro_morning": "Morning. Be prepared, stay disciplined, and do not slack.",
+        "intro_night": "The day is done. Review your discipline and rest ready for tomorrow.",
+    },
+    "Ivy": {
+        "intro_morning": "Wake up, sleepyhead~ Don’t dawdle or I’ll tease you all day.",
+        "intro_night": "Bedtime already? Tuck in, cutie — naughty dreams await.",
+    },
+}
 
-WILL_REFINEMENTS_LOG = "data/Will_Refinements_Log.txt"
+# ---------------- Helpers ----------------
+def get_today_rotation(state, config):
+    idx = state["rotation_index"] % len(config["rotation"])
+    lead = config["rotation"][idx]["name"]
+    rest = config["rotation"][(idx + 1) % len(config["rotation"])]["name"]
+    supports = [s["name"] for s in config["rotation"] if s["name"] not in [lead, rest]]
+    return {"lead": lead, "rest": rest, "supports": supports}
 
-# Chatter pacing (seconds)
-WILL_MIN_SLEEP = 35 * 60
-WILL_MAX_SLEEP = 95 * 60
-
-# Probability boosts
-INTEREST_HIT_BOOST = 0.35
-DRAMATIC_SHIFT_BASE = 0.05
-RANT_CHANCE = 0.10  # baseline rant chance
-
-# Master favorites pool
-WILL_FAVORITES_POOL = [
-    "Legend of Zelda",
-    "Final Fantasy",
-    "League of Legends",
-    "Attack on Titan",
-    "Demon Slayer",
-    "My Hero Academia",
-    "Star Wars",
-    "Marvel movies",
-    "PC building",
-    "retro game consoles",
-    "new anime OSTs",
-    "VR headsets",
-    "streaming marathons",
-    "indie games",
-    "tech reviews",
-    "cosplay communities",
-]
-
-# ---------------- Profile ----------------
-def _read_file_first(path_list: List[str]) -> Optional[str]:
-    for p in path_list:
-        if os.path.exists(p):
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    return f.read()
-            except Exception:
-                continue
-    return None
-
-def load_will_profile() -> Dict:
-    text = _read_file_first(DEFAULT_PROFILE_PATHS) or ""
-    profile = {
-        "interests": ["tech", "games", "anime", "music"],
-        "dislikes": ["drama"],
-        "style": ["casual", "snarky"],
-        "triggers": ["hype", "memes", "nostalgia"],
-        "favorites": WILL_FAVORITES_POOL,
-    }
-    for line in text.splitlines():
-        low = line.strip().lower()
-        if low.startswith("interests:"):
-            vals = [x.strip() for x in line.split(":", 1)[1].split(",") if x.strip()]
-            if vals: profile["interests"] = vals
-        elif low.startswith("dislikes:"):
-            vals = [x.strip() for x in line.split(":", 1)[1].split(",") if x.strip()]
-            if vals: profile["dislikes"] = vals
-        elif low.startswith("style:"):
-            vals = [x.strip() for x in line.split(":", 1)[1].split(",") if x.strip()]
-            if vals: profile["style"] = vals
-        elif low.startswith("triggers:"):
-            vals = [x.strip() for x in line.split(":", 1)[1].split(",") if x.strip()]
-            if vals: profile["triggers"] = vals
-        elif low.startswith("favorites:"):
-            vals = [x.strip() for x in line.split(":", 1)[1].split(",") if x.strip()]
-            if vals: profile["favorites"] = vals
-    return profile
-
-# ---------------- Favorites rotation ----------------
-def get_rotating_favorites(state: Dict, config: Dict, count: int = 3) -> List[str]:
+def get_current_theme(state, config):
     today = datetime.now().date()
-    key = "will_favorites_today"
+    if state.get("last_theme_update") is None or (
+        today.weekday() == 0 and state.get("last_theme_update") != today
+    ):
+        state["theme_index"] = (state.get("theme_index", 0) + 1) % len(config["themes"])
+        state["last_theme_update"] = today
+    return config["themes"][state.get("theme_index", 0)]
 
-    if state.get(f"{key}_date") == today and state.get(key):
-        return state[key]
+def is_awake(sister_info, lead_name):
+    """Check if sister is awake unless she’s lead (then always awake)."""
+    if sister_info["name"] == lead_name:
+        return True
+    now = datetime.now().time()
+    wake = datetime.strptime(sister_info.get("wake", "06:00"), "%H:%M").time()
+    bed = datetime.strptime(sister_info.get("bed", "22:00"), "%H:%M").time()
+    if wake <= bed:
+        return wake <= now <= bed
+    return now >= wake or now <= bed
 
-    profile = load_will_profile()
-    pool = profile.get("favorites", WILL_FAVORITES_POOL)
-
-    picks = random.sample(pool, min(count, len(pool)))
-    state[key] = picks
-    state[f"{key}_date"] = today
-    return picks
-
-# ---------------- Messaging ----------------
-async def _post_to_family(message: str, sender: str, sisters, config: Dict, state: Dict = None):
+async def post_to_family(message: str, sender, sisters, config):
+    """Send to family channel through the correct bot instance."""
     for bot in sisters:
-        if bot.is_ready() and bot.sister_info["name"] == sender:
+        if bot.sister_info["name"] == sender and bot.is_ready():
             try:
                 channel = bot.get_channel(config["family_group_channel"])
                 if channel:
                     await channel.send(message)
                     log_event(f"{sender} posted: {message}")
-
-                    # ✅ trigger teasing if Will posts
-                    if sender == "Will" and state is not None:
-                        await maybe_tease_will(state, config, sisters, "Will", message)
-
             except Exception as e:
-                log_event(f"[ERROR] Will send: {e}")
+                log_event(f"[ERROR] Failed send {sender}: {e}")
             break
 
-# ---------------- Schedule ----------------
-def assign_will_schedule(state: Dict, config: Dict):
-    today = datetime.now().date()
-    key = "will_schedule"
-    if state.get(f"{key}_date") == today and state.get(key):
-        return state[key]
-
-    scfg = config.get("schedules", {}).get("Will", {"wake": [10, 12], "sleep": [0, 2]})
-    wake_rng = scfg.get("wake", [10, 12])
-    sleep_rng = scfg.get("sleep", [0, 2])
-
-    def _pick(hr):
-        lo, hi = int(hr[0]), int(hr[1])
-        return random.randint(lo, hi) if hi >= lo else lo
-
-    schedule = {"wake": _pick(wake_rng), "sleep": _pick(sleep_rng)}
-    state[key] = schedule
-    state[f"{key}_date"] = today
-    return schedule
-
-def is_will_online(state: Dict, config: Dict) -> bool:
-    sc = assign_will_schedule(state, config)
-    now_hour = datetime.now().hour
-    wake, sleep = sc["wake"], sc["sleep"]
-    if wake == sleep: return True
-    if wake < sleep: return wake <= now_hour < sleep
-    return now_hour >= wake or now_hour < sleep
-
 # ---------------- Persona wrapper ----------------
-async def _persona_reply(base_prompt: str, rant: bool = False, state: Dict = None, config: Dict = None) -> str:
-    profile = load_will_profile()
-    style = ", ".join(profile.get("style", ["casual"]))
-    personality = "Casual, nerdy, sometimes dramatic. Younger brother energy."
-
-    tangent = ""
-    if rant and state is not None and config is not None:
-        favorites_today = get_rotating_favorites(state, config)
-        if favorites_today and random.random() < 0.7:
-            tangent = f" Mention something about {random.choice(favorites_today)}."
-
-    extra = (
-        f"Make it ranty/animated, 2–3 sentences, playful but dramatic.{tangent}"
-        if rant else
-        f"Keep it short (1–2 sentences), {style}, brotherly and casual."
-    )
+async def _persona_reply(sname, role, base_prompt, theme, history, config):
+    sister_cfg = next((s for s in config["rotation"] if s["name"] == sname), {})
+    personality = sister_cfg.get("personality", "Neutral personality.")
+    allow_swear = sister_cfg.get("swearing_allowed", False)
 
     prompt = (
-        f"You are Will. Personality: {personality}. "
-        f"Swearing is allowed if natural. "
-        f"{base_prompt} {extra}"
+        f"You are {sname}. Personality: {personality}. "
+        f"Tone: {role}. "
+        f"{'Swearing is allowed if it feels natural.' if allow_swear else 'Do not swear.'} "
+        f"{base_prompt}"
     )
 
     return await generate_llm_reply(
-        sister="Will",
+        sister=sname,
         user_message=prompt,
-        theme=None,
-        role="sister",
-        history=[],
+        theme=theme,
+        role=role,
+        history=history,
     )
 
-# ---------------- Rant Chance Helper ----------------
-def calculate_rant_chance(base: float, interest_score: float = 0, trigger_score: float = 0) -> float:
-    now_hour = datetime.now().hour
-    rant_chance = base
-    if 20 <= now_hour or now_hour <= 1: rant_chance *= 2
-    if interest_score > 0: rant_chance += 0.15
-    if trigger_score > 0: rant_chance += 0.20
-    return min(rant_chance, 1.0)
+# ---------------- Rituals ----------------
+async def send_morning_message(state, config, sisters):
+    rotation = get_today_rotation(state, config)
+    theme = get_current_theme(state, config)
+    lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
 
-# ---------------- Chatter Loop ----------------
-async def will_chatter_loop(state: Dict, config: Dict, sisters):
-    if state.get("will_chatter_started"): return
-    state["will_chatter_started"] = True
+    intro = PERSONA_TONES.get(lead, {}).get("intro_morning", "Good morning.")
+    try:
+        lead_msg = await _persona_reply(
+            lead, "lead",
+            f"Expand into a warm 3–5 sentence morning greeting. \"{intro}\"",
+            theme, [], config
+        )
+    except Exception:
+        lead_msg = intro
 
-    while True:
-        if is_will_online(state, config):
-            base_p = 0.18
-            if random.random() < 0.08: base_p += 0.10
-            if random.random() < base_p:
-                rant_mode = random.random() < calculate_rant_chance(RANT_CHANCE)
-                try:
-                    msg = await _persona_reply("Write a group chat comment.", rant=rant_mode, state=state, config=config)
-                    if msg: await _post_to_family(msg, "Will", sisters, config, state)
-                except Exception as e:
-                    log_event(f"[ERROR] Will chatter: {e}")
-        await asyncio.sleep(random.randint(WILL_MIN_SLEEP, WILL_MAX_SLEEP))
+    workout_block = get_today_workout()
+    lead_msg += f"\n\n🏋️ Today’s workout:\n{workout_block}"
 
-# ---------------- Reactive Handler ----------------
-async def will_handle_message(state: Dict, config: Dict, sisters, author: str, content: str, channel_id: int):
-    if not is_will_online(state, config): return
+    await post_to_family(lead_msg, sender=lead, sisters=sisters, config=config)
+    append_ritual_log(lead, "lead", theme, lead_msg)
 
-    profile = load_will_profile()
-    interest_score = _topic_match_score(content, profile.get("interests", []))
-    trigger_score = _topic_match_score(content, profile.get("triggers", []))
+    for s in supports:
+        if is_awake(next(bot.sister_info for bot in sisters if bot.sister_info["name"] == s), lead):
+            if random.random() < 0.7:
+                reply = await _persona_reply(
+                    s, "support",
+                    "Write a short supportive morning comment (1–2 sentences).",
+                    theme, [], config
+                )
+                if reply:
+                    await post_to_family(reply, sender=s, sisters=sisters, config=config)
+                    append_ritual_log(s, "support", theme, reply)
 
-    p = 0.15 + (interest_score * INTEREST_HIT_BOOST) + (trigger_score * 0.20)
-    p = min(p, 0.85)
-    if random.random() >= p: return
+    state["rotation_index"] = state.get("rotation_index", 0) + 1
 
-    rant_chance = calculate_rant_chance(RANT_CHANCE, interest_score, trigger_score)
-    rant_mode = random.random() < rant_chance
+async def send_night_message(state, config, sisters):
+    rotation = get_today_rotation(state, config)
+    theme = get_current_theme(state, config)
+    lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
+
+    intro = PERSONA_TONES.get(lead, {}).get("intro_night", "Good night.")
+    try:
+        lead_msg = await _persona_reply(
+            lead, "lead",
+            f"Expand into a thoughtful 3–5 sentence night reflection. \"{intro}\"",
+            theme, [], config
+        )
+    except Exception:
+        lead_msg = intro
+
+    tomorrow = datetime.now().date() + timedelta(days=1)
+    tomorrow_block = get_today_workout(tomorrow)
+    lead_msg += f"\n\n🌙 Tomorrow’s workout:\n{tomorrow_block}"
+
+    await post_to_family(lead_msg, sender=lead, sisters=sisters, config=config)
+    append_ritual_log(lead, "lead", theme, lead_msg)
+
+    for s in supports:
+        if is_awake(next(bot.sister_info for bot in sisters if bot.sister_info["name"] == s), lead):
+            if random.random() < 0.6:
+                reply = await _persona_reply(
+                    s, "support",
+                    "Write a short supportive night comment (1–2 sentences).",
+                    theme, [], config
+                )
+                if reply:
+                    await post_to_family(reply, sender=s, sisters=sisters, config=config)
+                    append_ritual_log(s, "support", theme, reply)
+
+# ---------------- Spontaneous ----------------
+async def send_spontaneous_task(state, config, sisters):
+    """Trigger a spontaneous chat message with fairness & cooldowns."""
+    rotation = get_today_rotation(state, config)
+    theme = get_current_theme(state, config)
+    lead = rotation["lead"]
+    now = datetime.now()
+
+    cooldowns = state.setdefault("spontaneous_cooldowns", {})
+    last_speaker = state.get("last_spontaneous_speaker")
+
+    awake = []
+    for bot in sisters:
+        sname = bot.sister_info["name"]
+        if not is_awake(bot.sister_info, lead):
+            continue
+        last_time = cooldowns.get(sname)
+        if last_time and (now - last_time).total_seconds() < 5400:  # 90 min cooldown
+            continue
+        awake.append(sname)
+
+    if not awake:
+        return
+
+    weights = []
+    for s in awake:
+        base = 1.0
+        if s == last_speaker:
+            base *= 0.2
+        spoken_today = state.setdefault("spontaneous_spoken_today", {})
+        if not spoken_today.get(s) or spoken_today[s].date() != now.date():
+            base *= 2.0
+        weights.append(base)
+
+    sister = random.choices(awake, weights=weights, k=1)[0]
 
     try:
-        reply = await _persona_reply(
-            f"{author} said: \"{content}\". Reply like Will would.",
-            rant=rant_mode, state=state, config=config
+        msg = await _persona_reply(
+            sister, "support",
+            "Send a casual, natural group chat comment (1–2 sentences).",
+            theme, [], config
         )
-        if reply: await _post_to_family(reply, "Will", sisters, config, state)
+        if msg:
+            await post_to_family(msg, sender=sister, sisters=sisters, config=config)
+            log_event(f"[SPONTANEOUS] {sister}: {msg}")
+            state["last_spontaneous_speaker"] = sister
+            cooldowns[sister] = now
+            state.setdefault("spontaneous_spoken_today", {})[sister] = now
     except Exception as e:
-        log_event(f"[ERROR] Will reactive: {e}")
+        log_event(f"[ERROR] Spontaneous task failed for {sister}: {e}")
 
-# ---------------- Startup Helper ----------------
-def ensure_will_systems(state: Dict, config: Dict, sisters):
-    get_rotating_favorites(state, config)  # ✅ ensure favorites seeded daily
-    assign_will_schedule(state, config)
-    if not state.get("will_chatter_started"):
-        asyncio.create_task(will_chatter_loop(state, config, sisters))
+# ---------------- Interaction ----------------
+async def handle_sister_message(state, config, sisters, author, content, channel_id):
+    rotation = get_today_rotation(state, config)
+    theme = get_current_theme(state, config)
+    lead = rotation["lead"]
+
+    for bot in sisters:
+        sname = bot.sister_info["name"]
+        if sname == author:
+            continue
+        if not is_awake(bot.sister_info, lead):
+            continue
+
+        chance = 0.2
+        if sname == lead:
+            chance = 0.8
+        elif sname in rotation["supports"]:
+            chance = 0.5
+        elif sname == rotation["rest"]:
+            chance = 0.1
+
+        if random.random() < chance:
+            try:
+                reply = await _persona_reply(
+                    sname, "support",
+                    f"Reply directly to {author}'s message: \"{content}\". Keep it short (1–2 sentences).",
+                    theme, [], config
+                )
+                if reply:
+                    await post_to_family(reply, sender=sname, sisters=sisters, config=config)
+                    log_event(f"[CHAT] {sname} → {author}: {reply}")
+            except Exception as e:
+                log_event(f"[ERROR] Sister reply failed for {sname}: {e}")
