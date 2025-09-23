@@ -44,7 +44,6 @@ def get_current_theme(state, config):
     return config["themes"][state.get("theme_index", 0)]
 
 def is_awake(sister_info, lead_name):
-    """Check if sister is awake unless she’s lead (then always awake)."""
     if sister_info["name"] == lead_name:
         return True
     now = datetime.now().time()
@@ -159,13 +158,11 @@ async def send_night_message(state, config, sisters):
 
 # ---------------- Spontaneous ----------------
 async def send_spontaneous_task(state, config, sisters):
-    """Trigger a spontaneous chat message with fairness & cooldowns."""
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
     lead = rotation["lead"]
     now = datetime.now()
 
-    # Cooldowns & history tracking
     cooldowns = state.setdefault("spontaneous_cooldowns", {})
     last_speaker = state.get("last_spontaneous_speaker")
 
@@ -175,14 +172,13 @@ async def send_spontaneous_task(state, config, sisters):
         if not is_awake(bot.sister_info, lead):
             continue
         last_time = cooldowns.get(sname)
-        if last_time and (now - last_time).total_seconds() < 5400:  # 90 min cooldown
+        if last_time and (now - last_time).total_seconds() < 5400:
             continue
         awake.append(sname)
 
     if not awake:
         return
 
-    # Weighting logic
     weights = []
     for s in awake:
         base = 1.0
@@ -243,3 +239,47 @@ async def handle_sister_message(state, config, sisters, author, content, channel
                     log_event(f"[CHAT] {sname} → {author}: {reply}")
             except Exception as e:
                 log_event(f"[ERROR] Sister reply failed for {sname}: {e}")
+
+# ---------------- Teasing Will ----------------
+async def maybe_tease_will(state, config, sisters, author: str, content: str):
+    if author != "Will":
+        return
+
+    rotation = get_today_rotation(state, config)
+    theme = get_current_theme(state, config)
+    lead = rotation["lead"]
+
+    favorites_today = state.get("will_favorites_today", [])
+    if not favorites_today:
+        return
+
+    mention = next((fav for fav in favorites_today if fav.lower() in content.lower()), None)
+    if not mention:
+        return
+
+    for bot in sisters:
+        sname = bot.sister_info["name"]
+        if sname == "Will":
+            continue
+        if not is_awake(bot.sister_info, lead):
+            continue
+
+        chance = 0.4
+        if sname == "Ivy":
+            chance = 0.8
+        elif sname == "Cassandra":
+            chance = 0.5
+
+        if random.random() < chance:
+            try:
+                reply = await _persona_reply(
+                    sname, "support",
+                    f"Tease Will for being obsessed with {mention}. "
+                    f"Keep it playful, 1–2 sentences, in your own style.",
+                    theme, [], config
+                )
+                if reply:
+                    await post_to_family(reply, sender=sname, sisters=sisters, config=config)
+                    log_event(f"[TEASE] {sname} → Will: {reply}")
+            except Exception as e:
+                log_event(f"[ERROR] Tease failed for {sname}: {e}")
