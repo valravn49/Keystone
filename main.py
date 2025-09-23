@@ -1,4 +1,3 @@
-# main.py
 import os
 import json
 import asyncio
@@ -60,7 +59,7 @@ class SisterBot(commands.Bot):
 class WillBot(commands.Bot):
     def __init__(self, will_info):
         super().__init__(command_prefix="!", intents=intents)
-        self.sister_info = will_info  # Keep naming consistent with sisters
+        self.sister_info = will_info
 
     async def setup_hook(self):
         # Will has no slash commands for now
@@ -68,9 +67,9 @@ class WillBot(commands.Bot):
 
 
 # Create bot instances
-sisters = [SisterBot(s) for s in config["rotation"]]
-will_info = {"name": "Will", "env_var": "WILL_TOKEN"}
-will_bot = WillBot(will_info)
+sisters = [SisterBot(s) for s in config["rotation"] if s["name"] != "Will"]
+will_info = next((s for s in config["rotation"] if s["name"] == "Will"), None)
+will_bot = WillBot(will_info) if will_info else None
 
 
 # ---------------- Events ----------------
@@ -80,7 +79,7 @@ async def on_ready():
     for bot in sisters:
         if bot.user:
             log_event(f"{bot.sister_info['name']} logged in as {bot.user}")
-    if will_bot.user:
+    if will_bot and will_bot.user:
         log_event(f"{will_bot.sister_info['name']} logged in as {will_bot.user}")
 
 
@@ -97,16 +96,28 @@ async def on_message(message):
     await sisters_behavior.handle_sister_message(
         state, config, sisters, author, content, channel_id
     )
-    # Will handle
-    await will_handle_message(state, config, [will_bot], author, content, channel_id)
+
+
+if will_bot:
+    @will_bot.event
+    async def on_message(message):
+        if message.author.bot:
+            return
+
+        channel_id = message.channel.id
+        author = str(message.author)
+        content = message.content
+
+        # Will handle
+        await will_handle_message(state, config, [will_bot], author, content, channel_id)
 
 
 # ---------------- Tasks ----------------
-@tasks.loop(time=datetime.time(hour=20, minute=0))
+@tasks.loop(time=datetime.time(hour=6, minute=0))
 async def morning_task():
     await send_morning_message(state, config, sisters)
 
-@tasks.loop(time=datetime.time(hour=12, minute=0))
+@tasks.loop(time=datetime.time(hour=22, minute=0))
 async def night_task():
     await send_night_message(state, config, sisters)
 
@@ -132,14 +143,16 @@ async def before_spontaneous():
 async def run_all():
     for bot in sisters:
         asyncio.create_task(bot.start(os.getenv(bot.sister_info["env_var"])))
-    asyncio.create_task(will_bot.start(os.getenv(will_bot.sister_info["env_var"])))
+    if will_bot:
+        asyncio.create_task(will_bot.start(os.getenv(will_bot.sister_info["env_var"])))
 
     morning_task.start()
     night_task.start()
     spontaneous_task.start()
 
     # ✅ Start Will’s independent chatter
-    ensure_will_systems(state, config, [will_bot])
+    if will_bot:
+        ensure_will_systems(state, config, [will_bot])
 
     log_event("[SYSTEM] All tasks started (FastAPI loop).")
 
