@@ -69,7 +69,7 @@ class WillBot(commands.Bot):
 
 # Create bot instances
 sisters = [SisterBot(s) for s in config["rotation"]]
-will_info = {"name": "Will", "env_var": "DISCORD_TOKEN_WILL"}
+will_info = {"name": "Will", "env_var": "TOKEN_WILL"}
 will_bot = WillBot(will_info)
 
 
