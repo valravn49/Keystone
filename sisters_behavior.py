@@ -159,19 +159,42 @@ async def send_night_message(state, config, sisters):
 
 # ---------------- Spontaneous ----------------
 async def send_spontaneous_task(state, config, sisters):
+    """Trigger a spontaneous chat message with fairness & cooldowns."""
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
     lead = rotation["lead"]
+    now = datetime.now()
 
-    awake = [
-        bot.sister_info["name"]
-        for bot in sisters
-        if is_awake(bot.sister_info, lead)
-    ]
+    # Cooldowns & history tracking
+    cooldowns = state.setdefault("spontaneous_cooldowns", {})
+    last_speaker = state.get("last_spontaneous_speaker")
+
+    awake = []
+    for bot in sisters:
+        sname = bot.sister_info["name"]
+        if not is_awake(bot.sister_info, lead):
+            continue
+        last_time = cooldowns.get(sname)
+        if last_time and (now - last_time).total_seconds() < 5400:  # 90 min cooldown
+            continue
+        awake.append(sname)
+
     if not awake:
         return
 
-    sister = random.choice(awake)
+    # Weighting logic
+    weights = []
+    for s in awake:
+        base = 1.0
+        if s == last_speaker:
+            base *= 0.2
+        spoken_today = state.setdefault("spontaneous_spoken_today", {})
+        if not spoken_today.get(s) or spoken_today[s].date() != now.date():
+            base *= 2.0
+        weights.append(base)
+
+    sister = random.choices(awake, weights=weights, k=1)[0]
+
     try:
         msg = await _persona_reply(
             sister, "support",
@@ -181,6 +204,9 @@ async def send_spontaneous_task(state, config, sisters):
         if msg:
             await post_to_family(msg, sender=sister, sisters=sisters, config=config)
             log_event(f"[SPONTANEOUS] {sister}: {msg}")
+            state["last_spontaneous_speaker"] = sister
+            cooldowns[sister] = now
+            state.setdefault("spontaneous_spoken_today", {})[sister] = now
     except Exception as e:
         log_event(f"[ERROR] Spontaneous task failed for {sister}: {e}")
 
