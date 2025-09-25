@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from llm import generate_llm_reply
 from logger import log_event, append_ritual_log
 from workouts import get_today_workout
+from will_behavior import will_maybe_participate  # ✅ Will integration
 
 # Persona tones for rituals
 PERSONA_TONES = {
@@ -121,6 +122,8 @@ async def send_morning_message(state, config, sisters):
                 if reply:
                     await post_to_family(reply, sender=s, sisters=sisters, config=config)
                     append_ritual_log(s, "support", theme, reply)
+                    # ✅ Will might join in
+                    await will_maybe_participate(state, config, sisters, f"{s} supported {lead} in morning ritual")
 
     state["rotation_index"] = state.get("rotation_index", 0) + 1
 
@@ -157,6 +160,8 @@ async def send_night_message(state, config, sisters):
                 if reply:
                     await post_to_family(reply, sender=s, sisters=sisters, config=config)
                     append_ritual_log(s, "support", theme, reply)
+                    # ✅ Will might join in
+                    await will_maybe_participate(state, config, sisters, f"{s} supported {lead} in night ritual")
 
 # ---------------- Spontaneous ----------------
 async def send_spontaneous_task(state, config, sisters):
@@ -197,7 +202,7 @@ async def send_spontaneous_task(state, config, sisters):
     try:
         msg = await _persona_reply(
             sister, "support",
-            "Send a casual, natural group chat comment (1–2 sentences). Try to engage with another sibling or Will, not just a random statement.",
+            "Send a casual, natural group chat comment (1–2 sentences).",
             theme, [], config
         )
         if msg:
@@ -206,6 +211,8 @@ async def send_spontaneous_task(state, config, sisters):
             state["last_spontaneous_speaker"] = sister
             cooldowns[sister] = now
             state.setdefault("spontaneous_spoken_today", {})[sister] = now
+            # ✅ Will might join in
+            await will_maybe_participate(state, config, sisters, f"{sister} made a spontaneous comment")
     except Exception as e:
         log_event(f"[ERROR] Spontaneous task failed for {sister}: {e}")
 
@@ -215,30 +222,9 @@ async def handle_sister_message(state, config, sisters, author, content, channel
     theme = get_current_theme(state, config)
     lead = rotation["lead"]
 
-    content_lower = content.lower()
-    mentioned = set()
-    mass_mention = False
-
-    # Detect mentions
-    for bot in sisters:
-        if bot.sister_info["name"].lower() in content_lower:
-            mentioned.add(bot.sister_info["name"])
-    if "will" in content_lower:
-        mentioned.add("Will")
-    if "everyone" in content_lower or "all" in content_lower:
-        mentioned.update([b.sister_info["name"] for b in sisters])
-        mentioned.add("Will")
-        mass_mention = True
-
-    # Mass mention cooldown (10 min)
-    now = datetime.now()
-    last_mass = state.get("last_mass_mention")
-    if mass_mention:
-        if last_mass and (now - last_mass).total_seconds() < 600:
-            mentioned.clear()
-            mass_mention = False
-        else:
-            state["last_mass_mention"] = now
+    mentions = [s["name"] for s in config["rotation"] if s["name"].lower() in content.lower()]
+    if "everyone" in content.lower() or "@everyone" in content.lower():
+        mentions = [s["name"] for s in config["rotation"]]
 
     for bot in sisters:
         sname = bot.sister_info["name"]
@@ -247,7 +233,6 @@ async def handle_sister_message(state, config, sisters, author, content, channel
         if not is_awake(bot.sister_info, lead):
             continue
 
-        must_reply = sname in mentioned
         chance = 0.2
         if sname == lead:
             chance = 0.8
@@ -255,17 +240,20 @@ async def handle_sister_message(state, config, sisters, author, content, channel
             chance = 0.5
         elif sname == rotation["rest"]:
             chance = 0.1
+        if sname in mentions:
+            chance = 1.0
 
-        if must_reply or random.random() < chance:
+        if random.random() < chance:
             try:
                 reply = await _persona_reply(
                     sname, "support",
-                    f"Reply directly to {author}'s message: \"{content}\". "
-                    f"Engage naturally with them or another sibling, not just a random statement. Keep it 1–2 sentences.",
+                    f"Reply directly to {author}'s message: \"{content}\". Keep it short (1–2 sentences).",
                     theme, [], config
                 )
                 if reply:
                     await post_to_family(reply, sender=sname, sisters=sisters, config=config)
                     log_event(f"[CHAT] {sname} → {author}: {reply}")
+                    # ✅ Will might join in
+                    await will_maybe_participate(state, config, sisters, f"{sname} replied to {author}")
             except Exception as e:
                 log_event(f"[ERROR] Sister reply failed for {sname}: {e}")
