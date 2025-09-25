@@ -1,16 +1,30 @@
-from image_gen import text2im
+# image_utils.py
+import base64
+import io
+from openai import AsyncOpenAI
+from logger import log_event
 
-async def generate_character_image(character: str, prompt: str, size="1024x1024"):
+client = AsyncOpenAI()
+
+async def generate_image(prompt: str, size: str = "1024x1024", n: int = 1):
     """
-    Generate an image based on a sibling's prompt.
+    Generate an image from a text prompt.
+    Returns a list of in-memory file-like objects (BytesIO).
     """
     try:
-        result = await text2im({
-            "prompt": f"{character} concept art, {prompt}",
-            "size": size,
-            "n": 1
-        })
-        if result and "data" in result and len(result["data"]) > 0:
-            return result["data"][0]["url"]
+        response = await client.images.generate(
+            model="gpt-image-1",
+            prompt=prompt,
+            size=size,
+            n=n,
+            response_format="b64_json",
+        )
+        results = []
+        for item in response.data:
+            b64 = item.b64_json
+            img_bytes = base64.b64decode(b64)
+            results.append(io.BytesIO(img_bytes))
+        return results
     except Exception as e:
-        return f"[ERROR] Image generation failed for {character}: {e}"
+        log_event(f"[ERROR] Image generation failed: {e}")
+        return []
