@@ -1,12 +1,13 @@
 import os
 import random
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, Optional, List
 
 from llm import generate_llm_reply
 from logger import log_event
 
+# Will's dynamic profile loader
 DEFAULT_PROFILE_PATHS = [
     "data/Will_Profile.txt",
     "/mnt/data/Will_Profile.txt",
@@ -14,9 +15,11 @@ DEFAULT_PROFILE_PATHS = [
 
 WILL_REFINEMENTS_LOG = "data/Will_Refinements_Log.txt"
 
+# Chatter pacing
 WILL_MIN_SLEEP = 35 * 60
 WILL_MAX_SLEEP = 95 * 60
 
+# Probability boosts
 INTEREST_HIT_BOOST = 0.35
 DRAMATIC_SHIFT_BASE = 0.05
 RANT_CHANCE = 0.10
@@ -24,10 +27,9 @@ RANT_CHANCE = 0.10
 WILL_FAVORITES_POOL = [
     "Legend of Zelda", "Final Fantasy", "League of Legends",
     "Attack on Titan", "Demon Slayer", "My Hero Academia",
-    "Star Wars", "Marvel movies", "PC building",
-    "retro game consoles", "new anime OSTs", "VR headsets",
-    "streaming marathons", "indie games", "tech reviews",
-    "cosplay communities",
+    "Star Wars", "Marvel movies", "PC building", "retro game consoles",
+    "new anime OSTs", "VR headsets", "streaming marathons",
+    "indie games", "tech reviews", "cosplay communities",
 ]
 
 # ---------------- Profile ----------------
@@ -52,45 +54,25 @@ def load_will_profile() -> Dict:
     }
     for line in text.splitlines():
         low = line.strip().lower()
-        if low.startswith("interests:"):
-            vals = [x.strip() for x in line.split(":", 1)[1].split(",") if x.strip()]
-            if vals: profile["interests"] = vals
-        elif low.startswith("dislikes:"):
-            vals = [x.strip() for x in line.split(":", 1)[1].split(",") if x.strip()]
-            if vals: profile["dislikes"] = vals
-        elif low.startswith("style:"):
-            vals = [x.strip() for x in line.split(":", 1)[1].split(",") if x.strip()]
-            if vals: profile["style"] = vals
-        elif low.startswith("triggers:"):
-            vals = [x.strip() for x in line.split(":", 1)[1].split(",") if x.strip()]
-            if vals: profile["triggers"] = vals
-        elif low.startswith("favorites:"):
+        if low.startswith("favorites:"):
             vals = [x.strip() for x in line.split(":", 1)[1].split(",") if x.strip()]
             if vals: profile["favorites"] = vals
     return profile
 
-# ---------------- Favorites rotation ----------------
-def get_rotating_favorites(state: Dict, config: Dict, count: int = 3) -> List[str]:
-    today = datetime.now().date()
-    key = "will_favorites_today"
-    if state.get(f"{key}_date") == today and state.get(key):
-        return state[key]
-    profile = load_will_profile()
-    pool = profile.get("favorites", WILL_FAVORITES_POOL)
-    picks = random.sample(pool, min(count, len(pool)))
-    state[key] = picks
-    state[f"{key}_date"] = today
-    return picks
+def _topic_match_score(content: str, keywords: List[str]) -> float:
+    if not content or not keywords:
+        return 0.0
+    return sum(1.0 for kw in keywords if kw.lower() in content.lower())
 
 # ---------------- Messaging ----------------
-async def _post_to_family(message: str, sender: str, sisters, config: Dict):
+async def _post_to_family(message: str, sisters, config: Dict):
     for bot in sisters:
-        if bot.is_ready() and bot.sister_info["name"] == sender:
+        if bot.is_ready() and bot.sister_info["name"] == "Will":
             try:
                 channel = bot.get_channel(config["family_group_channel"])
                 if channel:
                     await channel.send(message)
-                    log_event(f"{sender} posted: {message}")
+                    log_event(f"Will posted: {message}")
             except Exception as e:
                 log_event(f"[ERROR] Will send: {e}")
             break
@@ -98,41 +80,58 @@ async def _post_to_family(message: str, sender: str, sisters, config: Dict):
 # ---------------- Schedule ----------------
 def assign_will_schedule(state: Dict, config: Dict):
     today = datetime.now().date()
-    key = "will_schedule"
-    if state.get(f"{key}_date") == today and state.get(key):
-        return state[key]
+    if state.get("will_schedule_date") == today and state.get("will_schedule"):
+        return state["will_schedule"]
+
     scfg = config.get("schedules", {}).get("Will", {"wake": [10, 12], "sleep": [0, 2]})
-    wake_rng, sleep_rng = scfg.get("wake", [10, 12]), scfg.get("sleep", [0, 2])
-    def _pick(hr): return random.randint(int(hr[0]), int(hr[1]))
+    wake_rng, sleep_rng = scfg["wake"], scfg["sleep"]
+
+    def _pick(rng): return random.randint(rng[0], rng[1])
     schedule = {"wake": _pick(wake_rng), "sleep": _pick(sleep_rng)}
-    state[key], state[f"{key}_date"] = schedule, today
+
+    state["will_schedule"] = schedule
+    state["will_schedule_date"] = today
     return schedule
 
 def is_will_online(state: Dict, config: Dict) -> bool:
     sc = assign_will_schedule(state, config)
-    now_hour, wake, sleep = datetime.now().hour, sc["wake"], sc["sleep"]
+    hour = datetime.now().hour
+    wake, sleep = sc["wake"], sc["sleep"]
     if wake == sleep: return True
-    if wake < sleep: return wake <= now_hour < sleep
-    return now_hour >= wake or now_hour < sleep
+    if wake < sleep: return wake <= hour < sleep
+    return hour >= wake or hour < sleep
 
-# ---------------- Persona wrapper ----------------
-async def _persona_reply(base_prompt: str, rant: bool = False, state: Dict = None, config: Dict = None) -> str:
+# ---------------- Persona ----------------
+async def _persona_reply(base_prompt: str, rant=False, state=None, config=None) -> str:
     profile = load_will_profile()
     style = ", ".join(profile.get("style", ["casual"]))
-    favorites_today = get_rotating_favorites(state, config)
-    tangent = ""
-    if rant and favorites_today and random.random() < 0.7:
-        tangent = f" Mention something about {random.choice(favorites_today)}."
-    extra = "Ranty/animated, 2–3 sentences." + tangent if rant else f"Short (1–2 sentences), {style}, brotherly."
-    prompt = f"You are Will. Personality: casual, nerdy, dramatic. {base_prompt} {extra}"
-    return await generate_llm_reply("Will", prompt, None, "sister", [])
+    personality = "Casual, nerdy, sometimes dramatic. Younger brother energy."
 
-# ---------------- Rant chance ----------------
-def calculate_rant_chance(base: float, interest_score: float = 0, trigger_score: float = 0) -> float:
-    now_hour, rant_chance = datetime.now().hour, base
-    if 20 <= now_hour or now_hour <= 1: rant_chance *= 2
-    if interest_score > 0: rant_chance += 0.15
-    if trigger_score > 0: rant_chance += 0.20
+    tangent = ""
+    if rant and state and config:
+        favs = profile.get("favorites", WILL_FAVORITES_POOL)
+        if favs and random.random() < 0.7:
+            tangent = f" Throw in something about {random.choice(favs)}."
+
+    extra = (
+        f"Make it ranty/animated, 2–3 sentences, playful but dramatic.{tangent}"
+        if rant else
+        f"Keep it short (1–2 sentences), {style}, brotherly and casual."
+    )
+
+    return await generate_llm_reply(
+        sister="Will",
+        user_message=f"You are Will. Personality: {personality}. {base_prompt} {extra}",
+        theme=None,
+        role="sister",
+        history=[],
+    )
+
+# ---------------- Rant Chance ----------------
+def calculate_rant_chance(base: float, interest_score=0, trigger_score=0) -> float:
+    hour = datetime.now().hour
+    rant_chance = base * (2 if hour >= 20 or hour <= 1 else 1)
+    rant_chance += 0.15 * interest_score + 0.20 * trigger_score
     return min(rant_chance, 1.0)
 
 # ---------------- Chatter ----------------
@@ -143,55 +142,43 @@ async def will_chatter_loop(state: Dict, config: Dict, sisters):
         if is_will_online(state, config) and random.random() < 0.2:
             rant_mode = random.random() < calculate_rant_chance(RANT_CHANCE)
             try:
-                msg = await _persona_reply("Make a group chat comment.", rant=rant_mode, state=state, config=config)
-                if msg: await _post_to_family(msg, "Will", sisters, config)
-            except Exception as e: log_event(f"[ERROR] Will chatter: {e}")
+                msg = await _persona_reply("Say something to the group chat.", rant=rant_mode, state=state, config=config)
+                if msg: await _post_to_family(msg, sisters, config)
+            except Exception as e:
+                log_event(f"[ERROR] Will chatter: {e}")
         await asyncio.sleep(random.randint(WILL_MIN_SLEEP, WILL_MAX_SLEEP))
 
-# ---------------- Cooldowns ----------------
-def _check_cooldown(state: Dict, key: str, seconds: int) -> bool:
-    """Return True if allowed, False if still cooling down."""
-    now = datetime.now()
-    last = state.get(key)
-    if last and (now - last).total_seconds() < seconds:
-        return False
-    state[key] = now
-    return True
-
-# ---------------- Reactive to user/sisters ----------------
-async def will_handle_message(state: Dict, config: Dict, sisters, author: str, content: str, channel_id: int):
+# ---------------- Reactive ----------------
+async def will_handle_message(state, config, sisters, author: str, content: str, channel_id: int):
     if not is_will_online(state, config): return
-    if not _check_cooldown(state, "will_global_cooldown", 45):  # 45s global cooldown
-        return
-
     profile = load_will_profile()
-    interest_score = sum(1 for i in profile["interests"] if i.lower() in content.lower())
-    trigger_score = sum(1 for t in profile["triggers"] if t.lower() in content.lower())
-    p = min(0.15 + interest_score*INTEREST_HIT_BOOST + trigger_score*0.2, 0.85)
+    interest, trigger = _topic_match_score(content, profile["interests"]), _topic_match_score(content, profile["triggers"])
+    p = min(0.15 + interest * INTEREST_HIT_BOOST + trigger * 0.20, 0.85)
     if random.random() >= p: return
-    rant_mode = random.random() < calculate_rant_chance(RANT_CHANCE, interest_score, trigger_score)
-    reply = await _persona_reply(f"{author} said: \"{content}\". Reply like Will would.", rant=rant_mode, state=state, config=config)
-    if reply: await _post_to_family(reply, "Will", sisters, config)
 
-# ---------------- Sister-specific replies ----------------
-async def will_reply_to_sister(state: Dict, config: Dict, sisters, author: str, content: str):
+    rant_mode = random.random() < calculate_rant_chance(RANT_CHANCE, interest, trigger)
+    prompt = f"{author} said: \"{content}\". Reply like Will would."
+    try:
+        reply = await _persona_reply(prompt, rant=rant_mode, state=state, config=config)
+        if reply: await _post_to_family(reply, sisters, config)
+    except Exception as e:
+        log_event(f"[ERROR] Will reactive: {e}")
+
+# ---------------- Participation ----------------
+async def will_maybe_participate(state, config, sisters, context: str):
+    """Let Will join in after sisters interact with each other."""
     if not is_will_online(state, config): return
-    if not _check_cooldown(state, f"will_cd_{author}", 60):  # 1-min per-sister cooldown
-        return
+    if random.random() > 0.25: return  # 25% base chance to jump in
 
-    favorites_today = get_rotating_favorites(state, config)
-    if author == "Aria":
-        base_prompt = f"Aria said: \"{content}\". Softer reply, slightly appreciative, still brotherly."
-    elif author == "Selene":
-        base_prompt = f"Selene said: \"{content}\". Half-teasing but let her motherly tone land. Maybe drop in {random.choice(favorites_today)}."
-    elif author == "Cassandra":
-        base_prompt = f"Cassandra said: \"{content}\". Bratty or defensive comeback, sarcastic allowed."
-    elif author == "Ivy":
-        base_prompt = f"Ivy said: \"{content}\". Banter back, snarky or meme-ish. Maybe reference {random.choice(favorites_today)}."
-    else:
-        base_prompt = f"{author} said: \"{content}\". Casual nerdy reply."
-    reply = await _persona_reply(base_prompt, rant=False, state=state, config=config)
-    if reply: await _post_to_family(reply, "Will", sisters, config)
+    rant_mode = random.random() < calculate_rant_chance(RANT_CHANCE)
+    try:
+        reply = await _persona_reply(
+            f"Chime in casually after the sisters: {context}",
+            rant=rant_mode, state=state, config=config
+        )
+        if reply: await _post_to_family(reply, sisters, config)
+    except Exception as e:
+        log_event(f"[ERROR] Will participate: {e}")
 
 # ---------------- Startup ----------------
 def ensure_will_systems(state: Dict, config: Dict, sisters):
