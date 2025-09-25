@@ -46,7 +46,6 @@ def get_current_theme(state, config):
     return config["themes"][state.get("theme_index", 0)]
 
 def is_awake(sister_info, lead_name):
-    """Check if sister is awake unless she’s lead (then always awake)."""
     if sister_info["name"] == lead_name:
         return True
     now = datetime.now().time()
@@ -57,7 +56,6 @@ def is_awake(sister_info, lead_name):
     return now >= wake or now <= bed
 
 async def post_to_family(message: str, sender, sisters, config, file=None):
-    """Send to family channel through the correct bot instance."""
     for bot in sisters:
         if bot.sister_info["name"] == sender and bot.is_ready():
             try:
@@ -92,6 +90,16 @@ async def _persona_reply(sname, role, base_prompt, theme, history, config):
         role=role,
         history=history,
     )
+
+# ---------------- Outfit memory ----------------
+def remember_outfit(state, sister: str, description: str):
+    outfits = state.setdefault("outfits", {})
+    outfits[sister] = {"desc": description, "time": datetime.now()}
+    log_event(f"[OUTFIT] {sister} saved outfit: {description}")
+
+def recall_outfit(state, sister: str):
+    outfits = state.get("outfits", {})
+    return outfits.get(sister, {}).get("desc")
 
 # ---------------- Rituals ----------------
 async def send_morning_message(state, config, sisters):
@@ -165,7 +173,6 @@ async def send_night_message(state, config, sisters):
 
 # ---------------- Spontaneous ----------------
 async def send_spontaneous_task(state, config, sisters):
-    """Trigger a spontaneous chat message with fairness & cooldowns."""
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
     lead = rotation["lead"]
@@ -180,7 +187,7 @@ async def send_spontaneous_task(state, config, sisters):
         if not is_awake(bot.sister_info, lead):
             continue
         last_time = cooldowns.get(sname)
-        if last_time and (now - last_time).total_seconds() < 5400:  # 90 min cooldown
+        if last_time and (now - last_time).total_seconds() < 5400:
             continue
         awake.append(sname)
 
@@ -200,14 +207,13 @@ async def send_spontaneous_task(state, config, sisters):
     sister = random.choices(awake, weights=weights, k=1)[0]
 
     try:
-        # Occasionally generate outfit images instead of text
         if random.random() < 0.15:
-            prompt = f"{sister}'s current outfit, illustrated in detailed style."
-            imgs = await generate_image(prompt)
-            if imgs:
-                await post_to_family(f"{sister} shows off their outfit:", sister, sisters, config, file=imgs[0])
-                log_event(f"[SPONTANEOUS IMAGE] {sister} generated outfit image.")
-                return
+            outfit = recall_outfit(state, sister)
+            if outfit:
+                imgs = await generate_image(f"{sister}'s current outfit: {outfit}")
+                if imgs:
+                    await post_to_family(f"{sister} shows off their outfit:", sister, sisters, config, file=imgs[0])
+                    return
 
         msg = await _persona_reply(
             sister, "support",
@@ -225,10 +231,6 @@ async def send_spontaneous_task(state, config, sisters):
 
 # ---------------- Interaction ----------------
 async def handle_sister_message(state, config, sisters, author, content, channel_id):
-    """
-    Allow siblings to interact with each other if awake.
-    If someone is explicitly mentioned, guarantee a reply.
-    """
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
     lead = rotation["lead"]
@@ -236,6 +238,10 @@ async def handle_sister_message(state, config, sisters, author, content, channel
     mentions = [s["name"] for s in config["rotation"] if s["name"].lower() in content.lower()]
     if "everyone" in content.lower():
         mentions = [s["name"] for s in config["rotation"]]
+
+    # Outfit declarations
+    if "wearing" in content.lower() or "outfit" in content.lower():
+        remember_outfit(state, author, content)
 
     for bot in sisters:
         sname = bot.sister_info["name"]
@@ -255,9 +261,15 @@ async def handle_sister_message(state, config, sisters, author, content, channel
 
         if must_reply or random.random() < chance:
             try:
+                # Check for outfit reference
+                ref = recall_outfit(state, author)
+                base_prompt = f"Reply directly to {author}'s message: \"{content}\". Keep it short."
+                if ref:
+                    base_prompt += f" You remember {author} mentioned wearing: {ref}."
+
                 reply = await _persona_reply(
                     sname, "support",
-                    f"Reply directly to {author}'s message: \"{content}\". Keep it short (1–2 sentences).",
+                    base_prompt,
                     theme, [], config
                 )
                 if reply:
