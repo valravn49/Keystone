@@ -1,12 +1,12 @@
-# sisters_behavior.py
 import random
 import asyncio
 from datetime import datetime, timedelta
+from typing import Dict, List
 
 from llm import generate_llm_reply
-from logger import log_event, append_ritual_log
+from logger import log_event, append_ritual_log, append_conversation_log
 from workouts import get_today_workout
-from image_utils import generate_image  # ✅ fixed import
+from image_utils import maybe_generate_image_request
 
 # Persona tones for rituals
 PERSONA_TONES = {
@@ -27,16 +27,15 @@ PERSONA_TONES = {
         "intro_night": "Bedtime already? Tuck in, cutie — naughty dreams await.",
     },
 }
-
 # ---------------- Helpers ----------------
-def get_today_rotation(state, config):
+def get_today_rotation(state: Dict, config: Dict):
     idx = state["rotation_index"] % len(config["rotation"])
     lead = config["rotation"][idx]["name"]
     rest = config["rotation"][(idx + 1) % len(config["rotation"])]["name"]
     supports = [s["name"] for s in config["rotation"] if s["name"] not in [lead, rest]]
     return {"lead": lead, "rest": rest, "supports": supports}
 
-def get_current_theme(state, config):
+def get_current_theme(state: Dict, config: Dict):
     today = datetime.now().date()
     if state.get("last_theme_update") is None or (
         today.weekday() == 0 and state.get("last_theme_update") != today
@@ -55,35 +54,43 @@ def is_awake(sister_info, lead_name):
         return wake <= now <= bed
     return now >= wake or now <= bed
 
-async def post_to_family(message: str, sender, sisters, config, file=None):
+async def post_to_family(message: str, sender, sisters, config, image=None):
     for bot in sisters:
         if bot.sister_info["name"] == sender and bot.is_ready():
             try:
                 channel = bot.get_channel(config["family_group_channel"])
                 if channel:
-                    if file:
-                        await channel.send(content=message, file=file)
+                    if image:
+                        await channel.send(message, file=image)
                     else:
                         await channel.send(message)
                     log_event(f"{sender} posted: {message}")
+                    append_conversation_log("Sisters", sender, message)
             except Exception as e:
                 log_event(f"[ERROR] Failed send {sender}: {e}")
             break
 
+def get_context_history(state: Dict, config: Dict, limit: int = None) -> List[str]:
+    """Return last N lines of conversation history for context."""
+    lookback = limit or config.get("conversation", {}).get("lookback", 6)
+    return state.get("history", {}).get("family", [])[-lookback:]
+
 # ---------------- Persona wrapper ----------------
-async def _persona_reply(sname, role, base_prompt, theme, history, config):
+async def _persona_reply(sname, role, base_prompt, theme, history, config, allow_image=True):
     sister_cfg = next((s for s in config["rotation"] if s["name"] == sname), {})
     personality = sister_cfg.get("personality", "Neutral personality.")
     allow_swear = sister_cfg.get("swearing_allowed", False)
 
+    context = "\n".join(history) if history else ""
     prompt = (
         f"You are {sname}. Personality: {personality}. "
         f"Tone: {role}. "
-        f"{'Swearing is allowed if it feels natural.' if allow_swear else 'Do not swear.'} "
+        f"{'Swearing allowed if natural.' if allow_swear else 'Do not swear.'} "
+        f"Recent chat context:\n{context}\n\n"
         f"{base_prompt}"
     )
 
-    return await generate_llm_reply(
+    msg = await generate_llm_reply(
         sister=sname,
         user_message=prompt,
         theme=theme,
@@ -91,15 +98,11 @@ async def _persona_reply(sname, role, base_prompt, theme, history, config):
         history=history,
     )
 
-# ---------------- Outfit memory ----------------
-def remember_outfit(state, sister: str, description: str):
-    outfits = state.setdefault("outfits", {})
-    outfits[sister] = {"desc": description, "time": datetime.now()}
-    log_event(f"[OUTFIT] {sister} saved outfit: {description}")
-
-def recall_outfit(state, sister: str):
-    outfits = state.get("outfits", {})
-    return outfits.get(sister, {}).get("desc")
+    # Check if image requested
+    if allow_image:
+        image = await maybe_generate_image_request(sname, msg, history)
+        return msg, image
+    return msg, None
 
 # ---------------- Rituals ----------------
 async def send_morning_message(state, config, sisters):
@@ -109,30 +112,30 @@ async def send_morning_message(state, config, sisters):
 
     intro = PERSONA_TONES.get(lead, {}).get("intro_morning", "Good morning.")
     try:
-        lead_msg = await _persona_reply(
+        lead_msg, image = await _persona_reply(
             lead, "lead",
             f"Expand into a warm 3–5 sentence morning greeting. \"{intro}\"",
-            theme, [], config
+            theme, get_context_history(state, config), config
         )
     except Exception:
-        lead_msg = intro
+        lead_msg, image = intro, None
 
     workout_block = get_today_workout()
     lead_msg += f"\n\n🏋️ Today’s workout:\n{workout_block}"
 
-    await post_to_family(lead_msg, sender=lead, sisters=sisters, config=config)
+    await post_to_family(lead_msg, lead, sisters, config, image=image)
     append_ritual_log(lead, "lead", theme, lead_msg)
 
     for s in supports:
         if is_awake(next(bot.sister_info for bot in sisters if bot.sister_info["name"] == s), lead):
             if random.random() < 0.7:
-                reply = await _persona_reply(
+                reply, image = await _persona_reply(
                     s, "support",
                     "Write a short supportive morning comment (1–2 sentences).",
-                    theme, [], config
+                    theme, get_context_history(state, config), config
                 )
                 if reply:
-                    await post_to_family(reply, sender=s, sisters=sisters, config=config)
+                    await post_to_family(reply, s, sisters, config, image=image)
                     append_ritual_log(s, "support", theme, reply)
 
     state["rotation_index"] = state.get("rotation_index", 0) + 1
@@ -144,31 +147,31 @@ async def send_night_message(state, config, sisters):
 
     intro = PERSONA_TONES.get(lead, {}).get("intro_night", "Good night.")
     try:
-        lead_msg = await _persona_reply(
+        lead_msg, image = await _persona_reply(
             lead, "lead",
             f"Expand into a thoughtful 3–5 sentence night reflection. \"{intro}\"",
-            theme, [], config
+            theme, get_context_history(state, config), config
         )
     except Exception:
-        lead_msg = intro
+        lead_msg, image = intro, None
 
     tomorrow = datetime.now().date() + timedelta(days=1)
     tomorrow_block = get_today_workout(tomorrow)
     lead_msg += f"\n\n🌙 Tomorrow’s workout:\n{tomorrow_block}"
 
-    await post_to_family(lead_msg, sender=lead, sisters=sisters, config=config)
+    await post_to_family(lead_msg, lead, sisters, config, image=image)
     append_ritual_log(lead, "lead", theme, lead_msg)
 
     for s in supports:
         if is_awake(next(bot.sister_info for bot in sisters if bot.sister_info["name"] == s), lead):
             if random.random() < 0.6:
-                reply = await _persona_reply(
+                reply, image = await _persona_reply(
                     s, "support",
                     "Write a short supportive night comment (1–2 sentences).",
-                    theme, [], config
+                    theme, get_context_history(state, config), config
                 )
                 if reply:
-                    await post_to_family(reply, sender=s, sisters=sisters, config=config)
+                    await post_to_family(reply, s, sisters, config, image=image)
                     append_ritual_log(s, "support", theme, reply)
 
 # ---------------- Spontaneous ----------------
@@ -207,21 +210,13 @@ async def send_spontaneous_task(state, config, sisters):
     sister = random.choices(awake, weights=weights, k=1)[0]
 
     try:
-        if random.random() < 0.15:
-            outfit = recall_outfit(state, sister)
-            if outfit:
-                imgs = await generate_image(f"{sister}'s current outfit: {outfit}")
-                if imgs:
-                    await post_to_family(f"{sister} shows off their outfit:", sister, sisters, config, file=imgs[0])
-                    return
-
-        msg = await _persona_reply(
+        msg, image = await _persona_reply(
             sister, "support",
             "Send a casual, natural group chat comment (1–2 sentences).",
-            theme, [], config
+            theme, get_context_history(state, config), config
         )
         if msg:
-            await post_to_family(msg, sender=sister, sisters=sisters, config=config)
+            await post_to_family(msg, sister, sisters, config, image=image)
             log_event(f"[SPONTANEOUS] {sister}: {msg}")
             state["last_spontaneous_speaker"] = sister
             cooldowns[sister] = now
@@ -235,13 +230,8 @@ async def handle_sister_message(state, config, sisters, author, content, channel
     theme = get_current_theme(state, config)
     lead = rotation["lead"]
 
-    mentions = [s["name"] for s in config["rotation"] if s["name"].lower() in content.lower()]
-    if "everyone" in content.lower():
-        mentions = [s["name"] for s in config["rotation"]]
-
-    # Outfit declarations
-    if "wearing" in content.lower() or "outfit" in content.lower():
-        remember_outfit(state, author, content)
+    # Track history
+    state.setdefault("history", {}).setdefault("family", []).append(f"{author}: {content}")
 
     for bot in sisters:
         sname = bot.sister_info["name"]
@@ -250,7 +240,7 @@ async def handle_sister_message(state, config, sisters, author, content, channel
         if not is_awake(bot.sister_info, lead):
             continue
 
-        must_reply = sname in mentions
+        mentioned = (sname.lower() in content.lower() or "everyone" in content.lower())
         chance = 0.2
         if sname == lead:
             chance = 0.8
@@ -258,22 +248,18 @@ async def handle_sister_message(state, config, sisters, author, content, channel
             chance = 0.5
         elif sname == rotation["rest"]:
             chance = 0.1
+        if mentioned:
+            chance = 1.0
 
-        if must_reply or random.random() < chance:
+        if random.random() < chance:
             try:
-                # Check for outfit reference
-                ref = recall_outfit(state, author)
-                base_prompt = f"Reply directly to {author}'s message: \"{content}\". Keep it short."
-                if ref:
-                    base_prompt += f" You remember {author} mentioned wearing: {ref}."
-
-                reply = await _persona_reply(
+                reply, image = await _persona_reply(
                     sname, "support",
-                    base_prompt,
-                    theme, [], config
+                    f"Reply to {author}'s message: \"{content}\". Keep it natural and engaging.",
+                    theme, get_context_history(state, config), config
                 )
                 if reply:
-                    await post_to_family(reply, sender=sname, sisters=sisters, config=config)
+                    await post_to_family(reply, sname, sisters, config, image=image)
                     log_event(f"[CHAT] {sname} → {author}: {reply}")
             except Exception as e:
                 log_event(f"[ERROR] Sister reply failed for {sname}: {e}")
