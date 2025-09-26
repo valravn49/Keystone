@@ -1,7 +1,9 @@
+# main.py
 import os
 import json
 import asyncio
 import datetime
+import random
 import discord
 from discord.ext import commands, tasks
 from fastapi import FastAPI
@@ -18,6 +20,9 @@ from logger import log_event
 # ✅ Will integration
 import will_behavior
 from will_behavior import ensure_will_systems, will_handle_message
+
+# ✅ Self-update integration
+from self_update import queue_update, apply_updates_if_sleeping, generate_organic_updates
 
 # ---------------- Load Config ----------------
 with open("config.json", "r", encoding="utf-8") as f:
@@ -36,6 +41,16 @@ state = {
     "spontaneous_end_tasks": {},
     "last_spontaneous_task": None,
 }
+
+# ---------------- Helpers ----------------
+def convert_hour(hour: int) -> int:
+    """Shift hour: if <10 → add 14, else subtract 10."""
+    return (hour + 14) % 24 if hour < 10 else (hour - 10) % 24
+
+
+def converted_time(hour: int, minute: int = 0) -> datetime.time:
+    return datetime.time(hour=convert_hour(hour), minute=minute)
+
 
 # ---------------- Discord Setup ----------------
 class SisterBot(commands.Bot):
@@ -62,14 +77,13 @@ class WillBot(commands.Bot):
         self.sister_info = will_info
 
     async def setup_hook(self):
-        # Will has no slash commands for now
         pass
 
 
 # Create bot instances
-sisters = [SisterBot(s) for s in config["rotation"] if s["name"] != "Will"]
-will_info = next((s for s in config["rotation"] if s["name"] == "Will"), None)
-will_bot = WillBot(will_info) if will_info else None
+sisters = [SisterBot(s) for s in config["rotation"]]
+will_info = {"name": "Will", "env_var": "WILL_TOKEN"}
+will_bot = WillBot(will_info)
 
 
 # ---------------- Events ----------------
@@ -79,7 +93,7 @@ async def on_ready():
     for bot in sisters:
         if bot.user:
             log_event(f"{bot.sister_info['name']} logged in as {bot.user}")
-    if will_bot and will_bot.user:
+    if will_bot.user:
         log_event(f"{will_bot.sister_info['name']} logged in as {will_bot.user}")
 
 
@@ -96,36 +110,60 @@ async def on_message(message):
     await sisters_behavior.handle_sister_message(
         state, config, sisters, author, content, channel_id
     )
-
-
-if will_bot:
-    @will_bot.event
-    async def on_message(message):
-        if message.author.bot:
-            return
-
-        channel_id = message.channel.id
-        author = str(message.author)
-        content = message.content
-
-        # Will handle
-        await will_handle_message(state, config, [will_bot], author, content, channel_id)
+    # Will handle
+    await will_handle_message(state, config, [will_bot], author, content, channel_id)
 
 
 # ---------------- Tasks ----------------
-@tasks.loop(time=datetime.time(hour=20, minute=0))
+@tasks.loop(time=converted_time(6, 0))
 async def morning_task():
     await send_morning_message(state, config, sisters)
 
-@tasks.loop(time=datetime.time(hour=12, minute=0))
+
+@tasks.loop(time=converted_time(22, 0))
 async def night_task():
     await send_night_message(state, config, sisters)
+
 
 @tasks.loop(minutes=60)
 async def spontaneous_task():
     await send_spontaneous_task(state, config, sisters)
 
 
+@tasks.loop(time=converted_time(3, 0))
+async def nightly_update_task():
+    """Apply organic and queued updates while siblings are asleep."""
+    organic_updates = generate_organic_updates(config, state)
+    bad_mood_chance = 0.15  # 15% chance
+
+    for sister in config["rotation"]:
+        name = sister["name"]
+
+        # Random organic updates
+        if name in organic_updates:
+            for upd in random.sample(organic_updates[name], k=random.randint(0, 2)):
+                queue_update(name, upd)
+
+        # Chance of bad mood
+        if random.random() < bad_mood_chance:
+            queue_update(
+                name,
+                {"behavior": "Bad mood today: shorter, snappier responses until night."},
+            )
+
+        profile_path = f"data/{name}_Profile.txt"
+        apply_updates_if_sleeping(name, state, config, profile_path)
+
+    # Will too
+    queue_update(
+        "Will",
+        {"personality_shift": "Sometimes bursts outgoing, but retreats faster if flustered."},
+    )
+    profile_path = "data/Will_Profile.txt"
+    apply_updates_if_sleeping("Will", state, config, profile_path)
+
+
+# ---------------- Loop guards ----------------
 @morning_task.before_loop
 async def before_morning():
     await asyncio.sleep(5)
@@ -138,21 +176,23 @@ async def before_night():
 async def before_spontaneous():
     await asyncio.sleep(10)
 
+@nightly_update_task.before_loop
+async def before_nightly():
+    await asyncio.sleep(20)
+
 
 # ---------------- Run ----------------
 async def run_all():
     for bot in sisters:
         asyncio.create_task(bot.start(os.getenv(bot.sister_info["env_var"])))
-    if will_bot:
-        asyncio.create_task(will_bot.start(os.getenv(will_bot.sister_info["env_var"])))
+    asyncio.create_task(will_bot.start(os.getenv(will_bot.sister_info["env_var"])))
 
     morning_task.start()
     night_task.start()
     spontaneous_task.start()
+    nightly_update_task.start()
 
-    # ✅ Start Will’s independent chatter
-    if will_bot:
-        ensure_will_systems(state, config, [will_bot])
+    ensure_will_systems(state, config, [will_bot])
 
     log_event("[SYSTEM] All tasks started (FastAPI loop).")
 
