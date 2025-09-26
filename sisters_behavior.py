@@ -74,9 +74,9 @@ async def _persona_reply(sname, role, base_prompt, theme, history, config):
 
     # Behavior ratios
     if sname == "Aria":
-        buckets = [("reference a book/poem", 0.4),
+        buckets = [("reference a book/poem", 0.2),
                    ("offer nurturing/supportive reflection", 0.3),
-                   ("ask a curious/personal check-in", 0.3)]
+                   ("ask a curious/personal check-in", 0.5)]
     elif sname == "Selene":
         buckets = [("be soft and motherly", 0.5),
                    ("show warm/playful curiosity", 0.3),
@@ -85,9 +85,9 @@ async def _persona_reply(sname, role, base_prompt, theme, history, config):
         buckets = [("be strict/discipline-focused", 0.6),
                    ("give firm but respectful encouragement", 0.4)]
     elif sname == "Ivy":
-        buckets = [("be bratty/snarky teasing", 0.5),
+        buckets = [("be bratty/snarky teasing", 0.4),
                    ("be mischievous playful", 0.3),
-                   ("act as affectionate little sister", 0.2)]
+                   ("act as affectionate little sister", 0.3)]
     else:
         buckets = [(base_prompt, 1.0)]
 
