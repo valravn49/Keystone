@@ -113,11 +113,11 @@ if will_bot:
 
 
 # ---------------- Tasks ----------------
-@tasks.loop(time=datetime.time(hour=6, minute=0))
+@tasks.loop(time=datetime.time(hour=20, minute=0))
 async def morning_task():
     await send_morning_message(state, config, sisters)
 
-@tasks.loop(time=datetime.time(hour=22, minute=0))
+@tasks.loop(time=datetime.time(hour=12, minute=0))
 async def night_task():
     await send_night_message(state, config, sisters)
 
