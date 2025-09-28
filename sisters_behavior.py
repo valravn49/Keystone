@@ -47,14 +47,18 @@ def is_awake(sister_info, lead_name):
     """Check if sister is awake unless she’s lead (then always awake)."""
     if sister_info["name"] == lead_name:
         return True
-    now = datetime.now().time()
-    wake = datetime.strptime(sister_info.get("wake", "06:00"), "%H:%M").time()
-    bed = datetime.strptime(sister_info.get("bed", "22:00"), "%H:%M").time()
-    if wake <= bed:
-        return wake <= now <= bed
-    return now >= wake or now <= bed
 
-async def post_to_family(message: str, sender, sisters, config):
+    now_hour = datetime.now().hour
+    scfg = sister_info.get("schedule")
+    if scfg:
+        wake, sleep = scfg.get("wake", [6, 8]), scfg.get("sleep", [22, 23])
+        lo, hi = int(wake[0]), int(sleep[1])
+        if lo <= hi:
+            return lo <= now_hour < hi
+        return now_hour >= lo or now_hour < hi
+    return True
+
+async def post_to_family(message: str, sender, sisters, config, state=None):
     """Send to family channel through the correct bot instance."""
     for bot in sisters:
         if bot.sister_info["name"] == sender and bot.is_ready():
@@ -63,25 +67,27 @@ async def post_to_family(message: str, sender, sisters, config):
                 if channel:
                     await channel.send(message)
                     log_event(f"{sender} posted: {message}")
+                    if state is not None:
+                        state["last_message"] = {
+                            "author": sender,
+                            "content": message,
+                            "time": datetime.now(),
+                        }
             except Exception as e:
                 log_event(f"[ERROR] Failed send {sender}: {e}")
             break
 
 # ---------------- Persona wrapper ----------------
-async def _persona_reply(sname, role, base_prompt, theme, history, config, bad_mood=False):
+async def _persona_reply(sname, role, base_prompt, theme, history, config, context=""):
     sister_cfg = next((s for s in config["rotation"] if s["name"] == sname), {})
     personality = sister_cfg.get("personality", "Neutral personality.")
     allow_swear = sister_cfg.get("swearing_allowed", False)
-
-    mood_modifier = ""
-    if bad_mood:
-        mood_modifier = "You are in a bad mood today. Be more curt, sarcastic, or blunt than usual."
 
     prompt = (
         f"You are {sname}. Personality: {personality}. "
         f"Tone: {role}. "
         f"{'Swearing is allowed if it feels natural.' if allow_swear else 'Do not swear.'} "
-        f"{mood_modifier} {base_prompt}"
+        f"{base_prompt} {context}"
     )
 
     return await generate_llm_reply(
@@ -93,17 +99,17 @@ async def _persona_reply(sname, role, base_prompt, theme, history, config, bad_m
     )
 
 # ---------------- Rituals ----------------
-async def send_morning_message(state, config, sisters, bad_mood=False):
+async def send_morning_message(state, config, sisters):
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
-    lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
+    lead, supports = rotation["lead"], rotation["supports"]
 
     intro = PERSONA_TONES.get(lead, {}).get("intro_morning", "Good morning.")
     try:
         lead_msg = await _persona_reply(
             lead, "lead",
             f"Expand into a warm 3–5 sentence morning greeting. \"{intro}\"",
-            theme, [], config, bad_mood=bad_mood
+            theme, [], config
         )
     except Exception:
         lead_msg = intro
@@ -111,7 +117,7 @@ async def send_morning_message(state, config, sisters, bad_mood=False):
     workout_block = get_today_workout()
     lead_msg += f"\n\n🏋️ Today’s workout:\n{workout_block}"
 
-    await post_to_family(lead_msg, sender=lead, sisters=sisters, config=config)
+    await post_to_family(lead_msg, lead, sisters, config, state)
     append_ritual_log(lead, "lead", theme, lead_msg)
 
     for s in supports:
@@ -120,25 +126,25 @@ async def send_morning_message(state, config, sisters, bad_mood=False):
                 reply = await _persona_reply(
                     s, "support",
                     "Write a short supportive morning comment (1–2 sentences).",
-                    theme, [], config, bad_mood=bad_mood
+                    theme, [], config
                 )
                 if reply:
-                    await post_to_family(reply, sender=s, sisters=sisters, config=config)
+                    await post_to_family(reply, s, sisters, config, state)
                     append_ritual_log(s, "support", theme, reply)
 
     state["rotation_index"] = state.get("rotation_index", 0) + 1
 
-async def send_night_message(state, config, sisters, bad_mood=False):
+async def send_evening_message(state, config, sisters):
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
-    lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
+    lead, supports = rotation["lead"], rotation["supports"]
 
     intro = PERSONA_TONES.get(lead, {}).get("intro_night", "Good night.")
     try:
         lead_msg = await _persona_reply(
             lead, "lead",
             f"Expand into a thoughtful 3–5 sentence night reflection. \"{intro}\"",
-            theme, [], config, bad_mood=bad_mood
+            theme, [], config
         )
     except Exception:
         lead_msg = intro
@@ -147,7 +153,7 @@ async def send_night_message(state, config, sisters, bad_mood=False):
     tomorrow_block = get_today_workout(tomorrow)
     lead_msg += f"\n\n🌙 Tomorrow’s workout:\n{tomorrow_block}"
 
-    await post_to_family(lead_msg, sender=lead, sisters=sisters, config=config)
+    await post_to_family(lead_msg, lead, sisters, config, state)
     append_ritual_log(lead, "lead", theme, lead_msg)
 
     for s in supports:
@@ -156,32 +162,81 @@ async def send_night_message(state, config, sisters, bad_mood=False):
                 reply = await _persona_reply(
                     s, "support",
                     "Write a short supportive night comment (1–2 sentences).",
-                    theme, [], config, bad_mood=bad_mood
+                    theme, [], config
                 )
                 if reply:
-                    await post_to_family(reply, sender=s, sisters=sisters, config=config)
+                    await post_to_family(reply, s, sisters, config, state)
                     append_ritual_log(s, "support", theme, reply)
 
 # ---------------- Spontaneous ----------------
-async def send_spontaneous_task(state, config, sisters, bad_mood=False):
-    """Trigger a spontaneous chat message with fairness & cooldowns."""
+async def send_spontaneous_task(state, config, sisters):
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
     lead = rotation["lead"]
+    now = datetime.now()
 
-    awake = [bot.sister_info["name"] for bot in sisters if is_awake(bot.sister_info, lead)]
+    awake = []
+    for bot in sisters:
+        sname = bot.sister_info["name"]
+        if not is_awake(bot.sister_info, lead):
+            log_event(f"[{sname}] asleep, skipping spontaneous check.")
+            continue
+        awake.append(sname)
+
     if not awake:
         return
 
     sister = random.choice(awake)
+
+    context = ""
+    if "last_message" in state and random.random() < 0.7:
+        lm = state["last_message"]
+        context = f" Reference {lm['author']}'s last comment: \"{lm['content']}\"."
+
     try:
         msg = await _persona_reply(
             sister, "support",
             "Send a casual, natural group chat comment (1–2 sentences).",
-            theme, [], config, bad_mood=bad_mood
+            theme, [], config, context=context
         )
         if msg:
-            await post_to_family(msg, sender=sister, sisters=sisters, config=config)
+            await post_to_family(msg, sister, sisters, config, state)
             log_event(f"[SPONTANEOUS] {sister}: {msg}")
     except Exception as e:
         log_event(f"[ERROR] Spontaneous task failed for {sister}: {e}")
+
+# ---------------- Interaction ----------------
+async def handle_sister_message(state, config, sisters, author, content, channel_id):
+    rotation = get_today_rotation(state, config)
+    theme = get_current_theme(state, config)
+    lead = rotation["lead"]
+
+    for bot in sisters:
+        sname = bot.sister_info["name"]
+        if sname == author:
+            continue
+        if not is_awake(bot.sister_info, lead):
+            continue
+
+        chance = 0.3
+        if sname == lead:
+            chance = 0.7
+        elif sname in rotation["supports"]:
+            chance = 0.5
+
+        if random.random() < chance:
+            context = ""
+            if random.random() < 0.6:
+                context = f" Reference {author}'s message: \"{content}\"."
+
+            try:
+                reply = await _persona_reply(
+                    sname, "support",
+                    f"Reply directly to {author}'s message.",
+                    theme, [], config, context=context
+                )
+                if reply:
+                    await post_to_family(reply, sname, sisters, config, state)
+                    log_event(f"[CHAT] {sname} → {author}: {reply}")
+            except Exception as e:
+                log_event(f"[ERROR] Sister reply failed for {sname}: {e}")
