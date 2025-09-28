@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 from llm import generate_llm_reply
 from logger import log_event, append_ritual_log
 from workouts import get_today_workout
-from will_behavior import get_will_mood, maybe_will_reply
 
 # Persona tones for rituals
 PERSONA_TONES = {
@@ -32,7 +31,7 @@ def get_today_rotation(state, config):
     idx = state["rotation_index"] % len(config["rotation"])
     lead = config["rotation"][idx]["name"]
     rest = config["rotation"][(idx + 1) % len(config["rotation"])]["name"]
-    supports = [s["name"] for s in config["rotation"] if s["name"] not in [lead, rest, "Will"]]
+    supports = [s["name"] for s in config["rotation"] if s["name"] not in [lead, rest]]
     return {"lead": lead, "rest": rest, "supports": supports}
 
 def get_current_theme(state, config):
@@ -45,6 +44,7 @@ def get_current_theme(state, config):
     return config["themes"][state.get("theme_index", 0)]
 
 def is_awake(sister_info, lead_name):
+    """Check if sister is awake unless she’s lead (then always awake)."""
     if sister_info["name"] == lead_name:
         return True
     now = datetime.now().time()
@@ -55,6 +55,7 @@ def is_awake(sister_info, lead_name):
     return now >= wake or now <= bed
 
 async def post_to_family(message: str, sender, sisters, config):
+    """Send to family channel through the correct bot instance."""
     for bot in sisters:
         if bot.sister_info["name"] == sender and bot.is_ready():
             try:
@@ -67,16 +68,20 @@ async def post_to_family(message: str, sender, sisters, config):
             break
 
 # ---------------- Persona wrapper ----------------
-async def _persona_reply(sname, role, base_prompt, theme, history, config):
+async def _persona_reply(sname, role, base_prompt, theme, history, config, bad_mood=False):
     sister_cfg = next((s for s in config["rotation"] if s["name"] == sname), {})
     personality = sister_cfg.get("personality", "Neutral personality.")
     allow_swear = sister_cfg.get("swearing_allowed", False)
 
+    mood_modifier = ""
+    if bad_mood:
+        mood_modifier = "You are in a bad mood today. Be more curt, sarcastic, or blunt than usual."
+
     prompt = (
         f"You are {sname}. Personality: {personality}. "
-        f"Role: {role}. "
+        f"Tone: {role}. "
         f"{'Swearing is allowed if it feels natural.' if allow_swear else 'Do not swear.'} "
-        f"{base_prompt}"
+        f"{mood_modifier} {base_prompt}"
     )
 
     return await generate_llm_reply(
@@ -87,35 +92,8 @@ async def _persona_reply(sname, role, base_prompt, theme, history, config):
         history=history,
     )
 
-# ---------------- Will Mood Integration ----------------
-async def announce_will_mood(state, config, sisters):
-    mood = get_will_mood(state, config)
-    if not mood:
-        return
-
-    # Pick a sister (lead or random support) to comment
-    rotation = get_today_rotation(state, config)
-    lead = rotation["lead"]
-    responders = [lead] + rotation["supports"]
-    responder = random.choice(responders)
-
-    prompt = (
-        f"{responder} notices Will’s mood this morning ({mood}). "
-        f"React in 1–3 sentences, staying in character."
-    )
-    try:
-        msg = await _persona_reply(responder, "support", prompt, get_current_theme(state, config), [], config)
-        if msg:
-            await post_to_family(msg, responder, sisters, config)
-            append_ritual_log(responder, "support", "mood", msg)
-    except Exception as e:
-        log_event(f"[ERROR] Failed Will mood reaction: {e}")
-
-    # Give Will a chance to respond
-    await maybe_will_reply(state, config, sisters, f"Sisters commented on Will’s {mood} mood")
-
 # ---------------- Rituals ----------------
-async def send_morning_message(state, config, sisters):
+async def send_morning_message(state, config, sisters, bad_mood=False):
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
     lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
@@ -125,7 +103,7 @@ async def send_morning_message(state, config, sisters):
         lead_msg = await _persona_reply(
             lead, "lead",
             f"Expand into a warm 3–5 sentence morning greeting. \"{intro}\"",
-            theme, [], config
+            theme, [], config, bad_mood=bad_mood
         )
     except Exception:
         lead_msg = intro
@@ -136,19 +114,74 @@ async def send_morning_message(state, config, sisters):
     await post_to_family(lead_msg, sender=lead, sisters=sisters, config=config)
     append_ritual_log(lead, "lead", theme, lead_msg)
 
-    # Mood reveal for Will
-    await announce_will_mood(state, config, sisters)
-
     for s in supports:
         if is_awake(next(bot.sister_info for bot in sisters if bot.sister_info["name"] == s), lead):
             if random.random() < 0.7:
                 reply = await _persona_reply(
                     s, "support",
                     "Write a short supportive morning comment (1–2 sentences).",
-                    theme, [], config
+                    theme, [], config, bad_mood=bad_mood
                 )
                 if reply:
                     await post_to_family(reply, sender=s, sisters=sisters, config=config)
                     append_ritual_log(s, "support", theme, reply)
 
     state["rotation_index"] = state.get("rotation_index", 0) + 1
+
+async def send_night_message(state, config, sisters, bad_mood=False):
+    rotation = get_today_rotation(state, config)
+    theme = get_current_theme(state, config)
+    lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
+
+    intro = PERSONA_TONES.get(lead, {}).get("intro_night", "Good night.")
+    try:
+        lead_msg = await _persona_reply(
+            lead, "lead",
+            f"Expand into a thoughtful 3–5 sentence night reflection. \"{intro}\"",
+            theme, [], config, bad_mood=bad_mood
+        )
+    except Exception:
+        lead_msg = intro
+
+    tomorrow = datetime.now().date() + timedelta(days=1)
+    tomorrow_block = get_today_workout(tomorrow)
+    lead_msg += f"\n\n🌙 Tomorrow’s workout:\n{tomorrow_block}"
+
+    await post_to_family(lead_msg, sender=lead, sisters=sisters, config=config)
+    append_ritual_log(lead, "lead", theme, lead_msg)
+
+    for s in supports:
+        if is_awake(next(bot.sister_info for bot in sisters if bot.sister_info["name"] == s), lead):
+            if random.random() < 0.6:
+                reply = await _persona_reply(
+                    s, "support",
+                    "Write a short supportive night comment (1–2 sentences).",
+                    theme, [], config, bad_mood=bad_mood
+                )
+                if reply:
+                    await post_to_family(reply, sender=s, sisters=sisters, config=config)
+                    append_ritual_log(s, "support", theme, reply)
+
+# ---------------- Spontaneous ----------------
+async def send_spontaneous_task(state, config, sisters, bad_mood=False):
+    """Trigger a spontaneous chat message with fairness & cooldowns."""
+    rotation = get_today_rotation(state, config)
+    theme = get_current_theme(state, config)
+    lead = rotation["lead"]
+
+    awake = [bot.sister_info["name"] for bot in sisters if is_awake(bot.sister_info, lead)]
+    if not awake:
+        return
+
+    sister = random.choice(awake)
+    try:
+        msg = await _persona_reply(
+            sister, "support",
+            "Send a casual, natural group chat comment (1–2 sentences).",
+            theme, [], config, bad_mood=bad_mood
+        )
+        if msg:
+            await post_to_family(msg, sender=sister, sisters=sisters, config=config)
+            log_event(f"[SPONTANEOUS] {sister}: {msg}")
+    except Exception as e:
+        log_event(f"[ERROR] Spontaneous task failed for {sister}: {e}")
