@@ -44,6 +44,7 @@ WILL_FAVORITES_POOL = [
     "cosplay communities",
 ]
 
+
 # ---------------- Profile ----------------
 def _read_file_first(path_list: List[str]) -> Optional[str]:
     for p in path_list:
@@ -61,7 +62,7 @@ def load_will_profile() -> Dict:
     profile = {
         "interests": ["tech", "games", "anime", "music"],
         "dislikes": ["drama"],
-        "style": ["casual", "snarky", "shy"],
+        "style": ["casual", "shy", "timid"],
         "triggers": ["hype", "memes", "nostalgia"],
         "favorites": WILL_FAVORITES_POOL,
     }
@@ -95,6 +96,7 @@ def get_rotating_favorites(state: Dict, config: Dict, count: int = 3) -> List[st
 
     profile = load_will_profile()
     pool = profile.get("favorites", WILL_FAVORITES_POOL)
+
     picks = random.sample(pool, min(count, len(pool)))
     state[key] = picks
     state[f"{key}_date"] = today
@@ -102,7 +104,7 @@ def get_rotating_favorites(state: Dict, config: Dict, count: int = 3) -> List[st
 
 
 # ---------------- Messaging ----------------
-async def _post_to_family(message: str, sender: str, sisters, config: Dict):
+async def _post_to_family(message: str, sender: str, sisters, config: Dict, state=None):
     for bot in sisters:
         if bot.is_ready() and bot.sister_info["name"] == sender:
             try:
@@ -110,6 +112,12 @@ async def _post_to_family(message: str, sender: str, sisters, config: Dict):
                 if channel:
                     await channel.send(message)
                     log_event(f"{sender} posted: {message}")
+                    if state is not None:
+                        state["last_message"] = {
+                            "author": sender,
+                            "content": message,
+                            "time": datetime.now(),
+                        }
             except Exception as e:
                 log_event(f"[ERROR] Will send: {e}")
             break
@@ -145,11 +153,11 @@ def is_will_online(state: Dict, config: Dict) -> bool:
     return now_hour >= wake or now_hour < sleep
 
 
-# ---------------- Persona wrapper with memory ----------------
-async def _persona_reply(base_prompt: str, rant: bool = False, state: Dict = None, config: Dict = None) -> str:
+# ---------------- Persona wrapper ----------------
+async def _persona_reply(base_prompt: str, rant: bool = False, timid: bool = True, state: Dict = None, config: Dict = None, context="") -> str:
     profile = load_will_profile()
-    style = ", ".join(profile.get("style", ["casual"]))
-    personality = "Shy, nerdy, sometimes dramatic. Younger brother energy — easily flustered, but warm when comfortable."
+    style = ", ".join(profile.get("style", ["casual", "timid"]))
+    personality = "Shy, nerdy, sometimes dramatic. Younger brother energy. Withdraws when uncomfortable but can open up when teased."
 
     tangent = ""
     if rant and state is not None and config is not None:
@@ -157,26 +165,21 @@ async def _persona_reply(base_prompt: str, rant: bool = False, state: Dict = Non
         if favorites_today and random.random() < 0.7:
             tangent = f" Mention something about {random.choice(favorites_today)}."
 
-    # Pull in recent claims if they exist
-    claims = state.setdefault("recent_claims", {}).get("Will", [])
-    claim_context = ""
-    if claims and random.random() < 0.4:
-        chosen_claim = random.choice(claims[-3:])
-        claim_context = f" Remember, you mentioned: {chosen_claim}."
+    mood = "Reserved and hesitant." if timid else "Playful and more outspoken."
 
     extra = (
-        f"Make it ranty/animated, 2–3 sentences, shy but excitable.{tangent}{claim_context}"
+        f"Make it ranty/animated, 2–3 sentences, playful but dramatic.{tangent} {context}"
         if rant else
-        f"Keep it short (1–2 sentences), {style}, a little hesitant but sincere.{claim_context}"
+        f"Keep it short (1–2 sentences), {style}, {mood} {context}"
     )
 
     prompt = (
         f"You are Will. Personality: {personality}. "
-        f"Swearing is allowed if natural, but you’re timid so use it sparingly. "
+        f"Swearing is allowed if natural. "
         f"{base_prompt} {extra}"
     )
 
-    reply = await generate_llm_reply(
+    return await generate_llm_reply(
         sister="Will",
         user_message=prompt,
         theme=None,
@@ -184,22 +187,14 @@ async def _persona_reply(base_prompt: str, rant: bool = False, state: Dict = Non
         history=[],
     )
 
-    # Log new claims for continuity
-    if state is not None:
-        if any(x in reply.lower() for x in ["i have", "my cat", "my dog", "my project"]):
-            state.setdefault("recent_claims", {}).setdefault("Will", []).append(reply)
-
-    return reply
-
 
 # ---------------- Rant Chance Helper ----------------
-def calculate_rant_chance(base: float, interest_score: float = 0, trigger_score: float = 0, author: str = "") -> float:
+def calculate_rant_chance(base: float, interest_score: float = 0, trigger_score: float = 0) -> float:
     now_hour = datetime.now().hour
     rant_chance = base
     if 20 <= now_hour or now_hour <= 1: rant_chance *= 2
     if interest_score > 0: rant_chance += 0.15
     if trigger_score > 0: rant_chance += 0.20
-    if author.lower() == "ivy": rant_chance += 0.25  # more animated when Ivy's around
     return min(rant_chance, 1.0)
 
 
@@ -210,13 +205,25 @@ async def will_chatter_loop(state: Dict, config: Dict, sisters):
 
     while True:
         if is_will_online(state, config):
-            base_p = 0.12
-            if random.random() < 0.06: base_p += 0.08
+            base_p = 0.15
+            if random.random() < 0.05: base_p += 0.1
+
             if random.random() < base_p:
                 rant_mode = random.random() < calculate_rant_chance(RANT_CHANCE)
+                timid_mode = random.random() > 0.3
                 try:
-                    msg = await _persona_reply("Write a group chat comment.", rant=rant_mode, state=state, config=config)
-                    if msg: await _post_to_family(msg, "Will", sisters, config)
+                    context = ""
+                    if "last_message" in state and random.random() < 0.6:
+                        lm = state["last_message"]
+                        context = f" Reference {lm['author']}'s last comment: \"{lm['content']}\"."
+
+                    msg = await _persona_reply("Write a group chat comment.",
+                                               rant=rant_mode,
+                                               timid=timid_mode,
+                                               state=state,
+                                               config=config,
+                                               context=context)
+                    if msg: await _post_to_family(msg, "Will", sisters, config, state)
                 except Exception as e:
                     log_event(f"[ERROR] Will chatter: {e}")
         await asyncio.sleep(random.randint(WILL_MIN_SLEEP, WILL_MAX_SLEEP))
@@ -230,27 +237,31 @@ async def will_handle_message(state: Dict, config: Dict, sisters, author: str, c
     interest_score = _topic_match_score(content, profile.get("interests", []))
     trigger_score = _topic_match_score(content, profile.get("triggers", []))
 
-    p = 0.15 + (interest_score * INTEREST_HIT_BOOST) + (trigger_score * 0.20)
-    if author.lower() == "ivy": p += 0.20  # more likely to reply to Ivy
-    p = min(p, 0.9)
-
-    # Always respond if directly mentioned
+    p = 0.12 + (interest_score * INTEREST_HIT_BOOST) + (trigger_score * 0.20)
+    if author == "Ivy":
+        p += 0.25
     if "will" in content.lower():
-        p = 1.0
+        p = 0.9
 
+    p = min(p, 0.9)
     if random.random() >= p: return
 
-    rant_chance = calculate_rant_chance(RANT_CHANCE, interest_score, trigger_score, author)
+    rant_chance = calculate_rant_chance(RANT_CHANCE, interest_score, trigger_score)
     rant_mode = random.random() < rant_chance
+    timid_mode = random.random() > 0.2
+
+    context = ""
+    if random.random() < 0.7:
+        context = f" Reply directly to {author}'s message: \"{content}\"."
 
     try:
         reply = await _persona_reply(
-            f"{author} said: \"{content}\". Reply like Will would.",
-            rant=rant_mode, state=state, config=config
+            f"{author} said: \"{content}\".",
+            rant=rant_mode, timid=timid_mode,
+            state=state, config=config, context=context
         )
         if reply:
-            await _post_to_family(reply, "Will", sisters, config)
-            state.setdefault("recent_claims", {}).setdefault("Will", []).append(reply)
+            await _post_to_family(reply, "Will", sisters, config, state)
     except Exception as e:
         log_event(f"[ERROR] Will reactive: {e}")
 
