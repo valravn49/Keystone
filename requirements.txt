@@ -5,3 +5,5 @@ apscheduler
 python-dotenv
 pytz
 openai
+matplotlib
+networkx
