@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from llm import generate_llm_reply
 from logger import log_event, append_ritual_log
 from workouts import get_today_workout
-from relationships import adjust_relationship, evolve_relationships, plot_relationships
+from relationships import adjust_relationship
 
 # Persona tones for rituals
 PERSONA_TONES = {
@@ -45,7 +45,6 @@ def get_current_theme(state, config):
     return config["themes"][state.get("theme_index", 0)]
 
 def is_awake(sister_info, lead_name):
-    """Check if sister is awake unless she’s lead (then always awake)."""
     if sister_info["name"] == lead_name:
         return True
     now = datetime.now().time()
@@ -56,7 +55,6 @@ def is_awake(sister_info, lead_name):
     return now >= wake or now <= bed
 
 async def post_to_family(message: str, sender, sisters, config):
-    """Send to family channel through the correct bot instance."""
     for bot in sisters:
         if bot.sister_info["name"] == sender and bot.is_ready():
             try:
@@ -69,15 +67,26 @@ async def post_to_family(message: str, sender, sisters, config):
             break
 
 # ---------------- Persona wrapper ----------------
-async def _persona_reply(sname, role, base_prompt, theme, history, config):
+async def _persona_reply(sname, role, base_prompt, theme, history, config, target=None):
     sister_cfg = next((s for s in config["rotation"] if s["name"] == sname), {})
     personality = sister_cfg.get("personality", "Neutral personality.")
     allow_swear = sister_cfg.get("swearing_allowed", False)
 
+    # Special handling if talking to Will
+    if target == "Will":
+        if sname == "Ivy":
+            base_prompt += " Tease him like a bratty little sister would, but sometimes slip in surprising affection."
+        elif sname == "Selene":
+            base_prompt += " Speak softly and warmly, coaxing him out of his shell."
+        elif sname == "Cassandra":
+            base_prompt += " Be blunt, challenging him to toughen up, but not cruel."
+        elif sname == "Aria":
+            base_prompt += " Be thoughtful, perhaps overexplaining, but genuinely trying to support him."
+
     prompt = (
         f"You are {sname}. Personality: {personality}. "
         f"Tone: {role}. "
-        f"{'Swearing is allowed if it feels natural.' if allow_swear else 'Do not swear.'} "
+        f"{'Swearing is allowed if natural.' if allow_swear else 'Do not swear.'} "
         f"{base_prompt}"
     )
 
@@ -111,10 +120,6 @@ async def send_morning_message(state, config, sisters):
     await post_to_family(lead_msg, sender=lead, sisters=sisters, config=config)
     append_ritual_log(lead, "lead", theme, lead_msg)
 
-    # Relationship bump for lead being positive toward others
-    for s in supports + [rest]:
-        adjust_relationship(state, lead, s, "affection", +0.05)
-
     for s in supports:
         if is_awake(next(bot.sister_info for bot in sisters if bot.sister_info["name"] == s), lead):
             if random.random() < 0.7:
@@ -126,7 +131,6 @@ async def send_morning_message(state, config, sisters):
                 if reply:
                     await post_to_family(reply, sender=s, sisters=sisters, config=config)
                     append_ritual_log(s, "support", theme, reply)
-                    adjust_relationship(state, s, lead, "affection", +0.05)
 
     state["rotation_index"] = state.get("rotation_index", 0) + 1
 
@@ -163,14 +167,10 @@ async def send_night_message(state, config, sisters):
                 if reply:
                     await post_to_family(reply, sender=s, sisters=sisters, config=config)
                     append_ritual_log(s, "support", theme, reply)
-                    adjust_relationship(state, s, lead, "affection", +0.05)
-
-    # Nighttime relationship evolution + map
-    evolve_relationships(state)
-    plot_relationships(state)
 
 # ---------------- Spontaneous ----------------
 async def send_spontaneous_task(state, config, sisters):
+    """Trigger a spontaneous conversational message with fairness & cooldowns."""
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
     lead = rotation["lead"]
@@ -207,7 +207,7 @@ async def send_spontaneous_task(state, config, sisters):
     try:
         msg = await _persona_reply(
             sister, "support",
-            "Send a conversational group chat comment (1–2 sentences) that tries to engage another sibling.",
+            "Start a light conversation, ask a sibling (or Will) a question, or comment on something recent.",
             theme, [], config
         )
         if msg:
@@ -216,19 +216,17 @@ async def send_spontaneous_task(state, config, sisters):
             state["last_spontaneous_speaker"] = sister
             cooldowns[sister] = now
             state.setdefault("spontaneous_spoken_today", {})[sister] = now
-
-            # Positive engagement boosts affection
-            for other in awake:
-                if other != sister:
-                    adjust_relationship(state, sister, other, "affection", +0.03)
     except Exception as e:
         log_event(f"[ERROR] Spontaneous task failed for {sister}: {e}")
 
 # ---------------- Interaction ----------------
 async def handle_sister_message(state, config, sisters, author, content, channel_id):
+    """Allow siblings to interact with each other and Will."""
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
     lead = rotation["lead"]
+
+    mentions_will = "will" in content.lower()
 
     for bot in sisters:
         sname = bot.sister_info["name"]
@@ -237,36 +235,40 @@ async def handle_sister_message(state, config, sisters, author, content, channel
         if not is_awake(bot.sister_info, lead):
             continue
 
-        chance = 0.2
+        chance = 0.15
         if sname == lead:
-            chance = 0.8
+            chance = 0.7
         elif sname in rotation["supports"]:
-            chance = 0.5
+            chance = 0.4
         elif sname == rotation["rest"]:
             chance = 0.1
 
-        # If directly mentioned, boost chance heavily
-        if sname.lower() in content.lower() or "everyone" in content.lower():
-            chance = 1.0
+        # If Will is mentioned, boost responses
+        if mentions_will and sname != "Will":
+            chance += 0.35
 
         if random.random() < chance:
             try:
                 reply = await _persona_reply(
                     sname, "support",
-                    f"Reply directly to {author}'s message: \"{content}\". Keep it short (1–2 sentences).",
-                    theme, [], config
+                    f"Reply directly to {author}'s message: \"{content}\". Keep it short and conversational.",
+                    theme, [], config,
+                    target="Will" if mentions_will else None
                 )
                 if reply:
                     await post_to_family(reply, sender=sname, sisters=sisters, config=config)
                     log_event(f"[CHAT] {sname} → {author}: {reply}")
 
-                    # Relationship updates
-                    if "tease" in reply.lower() or sname == "Ivy":
-                        adjust_relationship(state, sname, author, "teasing", +0.05)
-                    elif sname == "Cassandra" and ("must" in reply or "discipline" in reply):
-                        adjust_relationship(state, sname, author, "conflict", +0.05)
-                    else:
-                        adjust_relationship(state, sname, author, "affection", +0.05)
+                    # Relationship adjustments
+                    if mentions_will:
+                        if sname == "Ivy":
+                            adjust_relationship(state, "Ivy", "Will", "teasing", +0.1)
+                        elif sname == "Selene":
+                            adjust_relationship(state, "Selene", "Will", "affection", +0.1)
+                        elif sname == "Cassandra":
+                            adjust_relationship(state, "Cassandra", "Will", "conflict", +0.05)
+                        elif sname == "Aria":
+                            adjust_relationship(state, "Aria", "Will", "affection", +0.05)
 
             except Exception as e:
                 log_event(f"[ERROR] Sister reply failed for {sname}: {e}")
