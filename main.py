@@ -1,4 +1,3 @@
-# main.py
 import os
 import json
 import asyncio
@@ -13,6 +12,9 @@ from sisters_behavior import (
     send_morning_message,
     send_night_message,
     send_spontaneous_task,
+    get_today_rotation,
+    get_current_theme,
+    advance_rotation,
 )
 from aria_commands import setup_aria_commands
 from logger import log_event
@@ -37,6 +39,7 @@ state = {
     "rotation_index": 0,
     "theme_index": 0,
     "last_theme_update": None,
+    "last_rotation_update": None,
     "history": {},
     "spontaneous_end_tasks": {},
     "last_spontaneous_task": None,
@@ -96,6 +99,12 @@ async def on_ready():
     if will_bot.user:
         log_event(f"{will_bot.sister_info['name']} logged in as {will_bot.user}")
 
+    # ✅ Log current rotation + theme at startup
+    advance_rotation(state, config)
+    rotation = get_today_rotation(state, config)
+    theme = get_current_theme(state, config)
+    log_event(f"[ROTATION] Lead: {rotation['lead']} | Rest: {rotation['rest']} | Supports: {rotation['supports']} | Theme: {theme}")
+
 
 @sisters[0].event
 async def on_message(message):
@@ -117,15 +126,23 @@ async def on_message(message):
 # ---------------- Tasks ----------------
 @tasks.loop(time=converted_time(6, 0))
 async def morning_task():
+    advance_rotation(state, config)
+    rotation = get_today_rotation(state, config)
+    theme = get_current_theme(state, config)
+    log_event(f"[MORNING ROTATION] Lead: {rotation['lead']} | Rest: {rotation['rest']} | Supports: {rotation['supports']} | Theme: {theme}")
     await send_morning_message(state, config, sisters)
 
 
 @tasks.loop(time=converted_time(22, 0))
 async def night_task():
+    advance_rotation(state, config)
+    rotation = get_today_rotation(state, config)
+    theme = get_current_theme(state, config)
+    log_event(f"[NIGHT ROTATION] Lead: {rotation['lead']} | Rest: {rotation['rest']} | Supports: {rotation['supports']} | Theme: {theme}")
     await send_night_message(state, config, sisters)
 
 
-@tasks.loop(minutes=60)
+@tasks.loop(minutes=random.randint(50, 90))
 async def spontaneous_task():
     await send_spontaneous_task(state, config, sisters)
 
@@ -134,17 +151,15 @@ async def spontaneous_task():
 async def nightly_update_task():
     """Apply organic and queued updates while siblings are asleep."""
     organic_updates = generate_organic_updates(config, state)
-    bad_mood_chance = 0.15  # 15% chance
+    bad_mood_chance = 0.15
 
     for sister in config["rotation"]:
         name = sister["name"]
 
-        # Random organic updates
         if name in organic_updates:
             for upd in random.sample(organic_updates[name], k=random.randint(0, 2)):
                 queue_update(name, upd)
 
-        # Chance of bad mood
         if random.random() < bad_mood_chance:
             queue_update(
                 name,
@@ -154,7 +169,6 @@ async def nightly_update_task():
         profile_path = f"data/{name}_Profile.txt"
         apply_updates_if_sleeping(name, state, config, profile_path)
 
-    # Will too
     queue_update(
         "Will",
         {"personality_shift": "Sometimes bursts outgoing, but retreats faster if flustered."},
