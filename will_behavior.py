@@ -23,7 +23,6 @@ WILL_MAX_SLEEP = 95 * 60
 # Probability boosts
 INTEREST_HIT_BOOST = 0.35
 IVY_BOOST = 0.25
-DRAMATIC_SHIFT_BASE = 0.05
 RANT_CHANCE = 0.10
 
 # Master favorites pool
@@ -134,7 +133,22 @@ def is_will_online(state: Dict, config: Dict) -> bool:
 async def _persona_reply(base_prompt: str, rant: bool = False, timid: bool = True, state: Dict = None, config: Dict = None) -> str:
     profile = load_will_profile()
     style = ", ".join(profile.get("style", ["casual", "timid"]))
-    personality = "Shy, nerdy, often hesitant but occasionally playful or dramatic."
+    personality = "Shy, nerdy, hesitant, often retreats if teased too much, but has bursts of playful confidence."
+
+    # Domain balancing — keep Will varied
+    if "group chat comment" in base_prompt.lower():
+        domains = [
+            "Admit something silly or awkward he did.",
+            "Share a nerdy excitement about games or anime.",
+            "Deflect Ivy’s teasing with humor.",
+            "Ask the group for advice timidly.",
+            "Show rare outgoing confidence, then retreat back into shyness."
+        ]
+        base_prompt = random.choice(domains)
+
+    # Replace placeholders with Nick/Val globally
+    if "[insert name]" in base_prompt:
+        base_prompt = base_prompt.replace("[insert name]", random.choice(["Nick", "Val"]))
 
     tangent = ""
     if rant and state is not None and config is not None:
@@ -179,11 +193,11 @@ async def will_chatter_loop(state: Dict, config: Dict, sisters):
 
     while True:
         if is_will_online(state, config):
-            base_p = 0.12  # lower base to reflect shyness
+            base_p = 0.12
             if random.random() < 0.05: base_p += 0.10
             if random.random() < base_p:
                 rant_mode = random.random() < calculate_rant_chance(RANT_CHANCE)
-                timid_mode = random.random() > 0.3  # 70% timid, 30% confident burst
+                timid_mode = random.random() > 0.3
                 try:
                     msg = await _persona_reply(
                         "Write a group chat comment.",
@@ -206,12 +220,10 @@ async def will_handle_message(state: Dict, config: Dict, sisters, author: str, c
 
     p = 0.10 + (interest_score * INTEREST_HIT_BOOST) + (trigger_score * 0.20)
     if author == "Ivy":
-        p += IVY_BOOST  # Ivy makes Will more likely to respond
-    p = min(p, 0.85)
-
-    # If Will is directly mentioned, always respond
+        p += IVY_BOOST
     if "will" in content.lower():
         p = 1.0
+    p = min(p, 0.85)
 
     if random.random() >= p: return
 
@@ -226,7 +238,6 @@ async def will_handle_message(state: Dict, config: Dict, sisters, author: str, c
         )
         if reply:
             await _post_to_family(reply, "Will", sisters, config)
-            # Relationship adjustments
             if author == "Ivy":
                 adjust_relationship(state, "Will", "Ivy", "affection", +0.08)
             else:
