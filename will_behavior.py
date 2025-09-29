@@ -1,3 +1,4 @@
+# will_behavior.py
 import os
 import random
 import asyncio
@@ -8,7 +9,7 @@ from llm import generate_llm_reply
 from logger import log_event
 from relationships import adjust_relationship
 
-# Will's dynamic profile loader
+# ---------------- Config ----------------
 DEFAULT_PROFILE_PATHS = [
     "data/Will_Profile.txt",
     "/mnt/data/Will_Profile.txt",
@@ -16,16 +17,13 @@ DEFAULT_PROFILE_PATHS = [
 
 WILL_REFINEMENTS_LOG = "data/Will_Refinements_Log.txt"
 
-# Chatter pacing (seconds)
 WILL_MIN_SLEEP = 35 * 60
 WILL_MAX_SLEEP = 95 * 60
 
-# Probability boosts
 INTEREST_HIT_BOOST = 0.35
 IVY_BOOST = 0.25
 RANT_CHANCE = 0.10
 
-# Master favorites pool
 WILL_FAVORITES_POOL = [
     "Legend of Zelda", "Final Fantasy", "League of Legends",
     "Attack on Titan", "Demon Slayer", "My Hero Academia",
@@ -35,7 +33,9 @@ WILL_FAVORITES_POOL = [
     "cosplay communities",
 ]
 
-# ---------------- Profile ----------------
+ALLOWED_NAMES = {"Aria", "Selene", "Cassandra", "Ivy", "Will", "Nick", "Val"}
+
+# ---------------- Helpers ----------------
 def _read_file_first(path_list: List[str]) -> Optional[str]:
     for p in path_list:
         if os.path.exists(p):
@@ -46,6 +46,18 @@ def _read_file_first(path_list: List[str]) -> Optional[str]:
                 continue
     return None
 
+def clean_names(text: str) -> str:
+    """Replace any stray capitalized names with Nick if not in allowed set."""
+    words = text.split()
+    fixed = []
+    for w in words:
+        if w.istitle() and w not in ALLOWED_NAMES:
+            fixed.append("Nick")
+        else:
+            fixed.append(w)
+    return " ".join(fixed)
+
+# ---------------- Profile ----------------
 def load_will_profile() -> Dict:
     text = _read_file_first(DEFAULT_PROFILE_PATHS) or ""
     profile = {
@@ -130,25 +142,11 @@ def is_will_online(state: Dict, config: Dict) -> bool:
     return now_hour >= wake or now_hour < sleep
 
 # ---------------- Persona wrapper ----------------
-async def _persona_reply(base_prompt: str, rant: bool = False, timid: bool = True, state: Dict = None, config: Dict = None) -> str:
+async def _persona_reply(base_prompt: str, rant: bool = False, timid: bool = True,
+                         state: Dict = None, config: Dict = None) -> str:
     profile = load_will_profile()
     style = ", ".join(profile.get("style", ["casual", "timid"]))
-    personality = "Shy, nerdy, hesitant, often retreats if teased too much, but has bursts of playful confidence."
-
-    # Domain balancing — keep Will varied
-    if "group chat comment" in base_prompt.lower():
-        domains = [
-            "Admit something silly or awkward he did.",
-            "Share a nerdy excitement about games or anime.",
-            "Deflect Ivy’s teasing with humor.",
-            "Ask the group for advice timidly.",
-            "Show rare outgoing confidence, then retreat back into shyness."
-        ]
-        base_prompt = random.choice(domains)
-
-    # Replace placeholders with Nick/Val globally
-    if "[insert name]" in base_prompt:
-        base_prompt = base_prompt.replace("[insert name]", random.choice(["Nick", "Val"]))
+    personality = "Shy, nerdy, often hesitant but occasionally playful or dramatic."
 
     tangent = ""
     if rant and state is not None and config is not None:
@@ -163,19 +161,26 @@ async def _persona_reply(base_prompt: str, rant: bool = False, timid: bool = Tru
         f"Keep it short (1–2 sentences), {style}, brotherly but {tone}."
     )
 
+    system_reminder = (
+        "Only reference siblings by name (Aria, Selene, Cassandra, Ivy, Will) "
+        "or the user as Nick or Val. Do not invent new names."
+    )
+
     prompt = (
         f"You are Will. Personality: {personality}. "
-        f"Swearing is allowed if natural. "
+        f"Swearing is allowed if natural. {system_reminder} "
         f"{base_prompt} {extra}"
     )
 
-    return await generate_llm_reply(
+    reply = await generate_llm_reply(
         sister="Will",
         user_message=prompt,
         theme=None,
         role="sister",
         history=[],
     )
+
+    return clean_names(reply or "")
 
 # ---------------- Rant Chance Helper ----------------
 def calculate_rant_chance(base: float, interest_score: float = 0, trigger_score: float = 0) -> float:
@@ -211,7 +216,8 @@ async def will_chatter_loop(state: Dict, config: Dict, sisters):
         await asyncio.sleep(random.randint(WILL_MIN_SLEEP, WILL_MAX_SLEEP))
 
 # ---------------- Reactive Handler ----------------
-async def will_handle_message(state: Dict, config: Dict, sisters, author: str, content: str, channel_id: int):
+async def will_handle_message(state: Dict, config: Dict, sisters,
+                              author: str, content: str, channel_id: int):
     if not is_will_online(state, config): return
 
     profile = load_will_profile()
@@ -221,9 +227,10 @@ async def will_handle_message(state: Dict, config: Dict, sisters, author: str, c
     p = 0.10 + (interest_score * INTEREST_HIT_BOOST) + (trigger_score * 0.20)
     if author == "Ivy":
         p += IVY_BOOST
+    p = min(p, 0.85)
+
     if "will" in content.lower():
         p = 1.0
-    p = min(p, 0.85)
 
     if random.random() >= p: return
 
