@@ -74,6 +74,51 @@ async def _persona_reply(sname, role, base_prompt, theme, history, config):
     personality = sister_cfg.get("personality", "Neutral personality.")
     allow_swear = sister_cfg.get("swearing_allowed", False)
 
+    # Broaden Aria’s focus
+    if sname == "Aria" and "book" in base_prompt.lower():
+        domains = [
+            "Reflect on a recent song or piece of art that struck you.",
+            "Talk about something calming in nature (like a sunrise or garden).",
+            "Share a thought on relationships or emotional growth.",
+            "Discuss something cozy from daily life (tea, walks, quiet rituals).",
+            "Offer a gentle philosophical thought or idea."
+        ]
+        base_prompt = random.choice(domains)
+
+    # Rotate Selene’s nurturing focus
+    if sname == "Selene" and "support" in base_prompt.lower():
+        domains = [
+            "Check in softly on everyone’s feelings today.",
+            "Offer a self-care or health tip.",
+            "Encourage rest and reflection.",
+            "Remind everyone they’re not alone."
+        ]
+        base_prompt = random.choice(domains)
+
+    # Rotate Cassandra’s leadership
+    if sname == "Cassandra" and "discipline" in base_prompt.lower():
+        domains = [
+            "Give structured advice on staying focused.",
+            "Encourage through respectful praise.",
+            "Point out the value of consistency.",
+            "Show a rare moment of personal vulnerability."
+        ]
+        base_prompt = random.choice(domains)
+
+    # Rotate Ivy’s chaos
+    if sname == "Ivy" and "tease" in base_prompt.lower():
+        domains = [
+            "Playfully tease someone.",
+            "Drop a sarcastic remark.",
+            "Act bratty but affectionate.",
+            "Surprise with a rare bit of support."
+        ]
+        base_prompt = random.choice(domains)
+
+    # Global Nick/Val replacement
+    if "[insert name]" in base_prompt:
+        base_prompt = base_prompt.replace("[insert name]", random.choice(["Nick", "Val"]))
+
     prompt = (
         f"You are {sname}. Personality: {personality}. "
         f"Tone: {role}. "
@@ -88,41 +133,6 @@ async def _persona_reply(sname, role, base_prompt, theme, history, config):
         role=role,
         history=history,
     )
-
-# ---------------- Organic Relationship Adjustment ----------------
-def adjust_relationships_from_reflection(state, speaker, text, siblings):
-    """
-    Adjust relationships organically based on Aria's reflections.
-    Looks for mentions or general tone, then nudges affection/teasing/conflict.
-    """
-    if speaker != "Aria":
-        return
-
-    rels = state.setdefault("relationships", {})
-    mentioned = [sib for sib in siblings if sib.lower() in text.lower()]
-
-    # If no one was directly mentioned, affect 1–2 random siblings
-    if not mentioned:
-        mentioned = random.sample(siblings, k=min(2, len(siblings)))
-
-    for sib in mentioned:
-        if sib == speaker:
-            continue
-        key = f"{speaker}→{sib}"
-        rel = rels.setdefault(key, {"affection": 0.0, "teasing": 0.0, "conflict": 0.0})
-
-        # Random tone-based nudges
-        if any(word in text.lower() for word in ["care", "kind", "proud", "support"]):
-            rel["affection"] += round(random.uniform(0.05, 0.15), 2)
-        elif any(word in text.lower() for word in ["lazy", "disappoint", "slack"]):
-            rel["conflict"] += round(random.uniform(0.05, 0.10), 2)
-        elif any(word in text.lower() for word in ["tease", "fun", "playful"]):
-            rel["teasing"] += round(random.uniform(0.05, 0.12), 2)
-        else:
-            # Soft default nudge toward affection
-            rel["affection"] += round(random.uniform(0.02, 0.08), 2)
-
-        log_event(f"[REL] Aria’s reflection nudged relationship with {sib}: {rel}")
 
 # ---------------- Rituals ----------------
 async def send_morning_message(state, config, sisters):
@@ -145,21 +155,6 @@ async def send_morning_message(state, config, sisters):
 
     await post_to_family(lead_msg, sender=lead, sisters=sisters, config=config)
     append_ritual_log(lead, "lead", theme, lead_msg)
-
-    # 🌱 Organic adjustment if Aria is lead
-    adjust_relationships_from_reflection(state, lead, lead_msg, [s["name"] for s in config["rotation"]])
-
-    for s in supports:
-        if is_awake(next(bot.sister_info for bot in sisters if bot.sister_info["name"] == s), lead):
-            if random.random() < 0.7:
-                reply = await _persona_reply(
-                    s, "support",
-                    "Write a short supportive morning comment (1–2 sentences).",
-                    theme, [], config
-                )
-                if reply:
-                    await post_to_family(reply, sender=s, sisters=sisters, config=config)
-                    append_ritual_log(s, "support", theme, reply)
 
     state["rotation_index"] = state.get("rotation_index", 0) + 1
 
@@ -184,21 +179,6 @@ async def send_night_message(state, config, sisters):
 
     await post_to_family(lead_msg, sender=lead, sisters=sisters, config=config)
     append_ritual_log(lead, "lead", theme, lead_msg)
-
-    # 🌱 Organic adjustment if Aria is lead
-    adjust_relationships_from_reflection(state, lead, lead_msg, [s["name"] for s in config["rotation"]])
-
-    for s in supports:
-        if is_awake(next(bot.sister_info for bot in sisters if bot.sister_info["name"] == s), lead):
-            if random.random() < 0.6:
-                reply = await _persona_reply(
-                    s, "support",
-                    "Write a short supportive night comment (1–2 sentences).",
-                    theme, [], config
-                )
-                if reply:
-                    await post_to_family(reply, sender=s, sisters=sisters, config=config)
-                    append_ritual_log(s, "support", theme, reply)
 
 # ---------------- Spontaneous ----------------
 async def send_spontaneous_task(state, config, sisters):
@@ -239,7 +219,7 @@ async def send_spontaneous_task(state, config, sisters):
     try:
         msg = await _persona_reply(
             sister, "support",
-            "Send a casual, natural group chat comment (1–2 sentences). Try to engage someone else.",
+            "Send a casual, natural group chat comment (1–2 sentences). Try to engage someone else directly.",
             theme, [], config
         )
         if msg:
@@ -268,7 +248,6 @@ async def handle_sister_message(state, config, sisters, author, content, channel
         if sname.lower() in content.lower() or "everyone" in content.lower():
             chance = 1.0
         else:
-            # Otherwise use probabilistic chance
             chance = 0.2
             if sname == lead:
                 chance = 0.8
