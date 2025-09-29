@@ -1,3 +1,4 @@
+# main.py
 import os
 import json
 import asyncio
@@ -7,23 +8,26 @@ import discord
 from discord.ext import commands, tasks
 from fastapi import FastAPI
 
+# Sisters behavior + helpers
 import sisters_behavior
 from sisters_behavior import (
     send_morning_message,
     send_night_message,
     send_spontaneous_task,
-    get_today_rotation,
-    get_current_theme,
     advance_rotation,
 )
+
+# Aria-specific commands
 from aria_commands import setup_aria_commands
+
+# Logger
 from logger import log_event
 
-# ✅ Will integration
+# Will behavior
 import will_behavior
 from will_behavior import ensure_will_systems, will_handle_message
 
-# ✅ Self-update integration
+# Self-update system
 from self_update import queue_update, apply_updates_if_sleeping, generate_organic_updates
 
 # ---------------- Load Config ----------------
@@ -39,7 +43,6 @@ state = {
     "rotation_index": 0,
     "theme_index": 0,
     "last_theme_update": None,
-    "last_rotation_update": None,
     "history": {},
     "spontaneous_end_tasks": {},
     "last_spontaneous_task": None,
@@ -53,7 +56,6 @@ def convert_hour(hour: int) -> int:
 
 def converted_time(hour: int, minute: int = 0) -> datetime.time:
     return datetime.time(hour=convert_hour(hour), minute=minute)
-
 
 # ---------------- Discord Setup ----------------
 class SisterBot(commands.Bot):
@@ -88,7 +90,6 @@ sisters = [SisterBot(s) for s in config["rotation"]]
 will_info = {"name": "Will", "env_var": "WILL_TOKEN"}
 will_bot = WillBot(will_info)
 
-
 # ---------------- Events ----------------
 @sisters[0].event
 async def on_ready():
@@ -98,12 +99,6 @@ async def on_ready():
             log_event(f"{bot.sister_info['name']} logged in as {bot.user}")
     if will_bot.user:
         log_event(f"{will_bot.sister_info['name']} logged in as {will_bot.user}")
-
-    # ✅ Log current rotation + theme at startup
-    advance_rotation(state, config)
-    rotation = get_today_rotation(state, config)
-    theme = get_current_theme(state, config)
-    log_event(f"[ROTATION] Lead: {rotation['lead']} | Rest: {rotation['rest']} | Supports: {rotation['supports']} | Theme: {theme}")
 
 
 @sisters[0].event
@@ -122,30 +117,18 @@ async def on_message(message):
     # Will handle
     await will_handle_message(state, config, [will_bot], author, content, channel_id)
 
-
 # ---------------- Tasks ----------------
 @tasks.loop(time=converted_time(6, 0))
 async def morning_task():
-    advance_rotation(state, config)
-    rotation = get_today_rotation(state, config)
-    theme = get_current_theme(state, config)
-    log_event(f"[MORNING ROTATION] Lead: {rotation['lead']} | Rest: {rotation['rest']} | Supports: {rotation['supports']} | Theme: {theme}")
     await send_morning_message(state, config, sisters)
-
 
 @tasks.loop(time=converted_time(22, 0))
 async def night_task():
-    advance_rotation(state, config)
-    rotation = get_today_rotation(state, config)
-    theme = get_current_theme(state, config)
-    log_event(f"[NIGHT ROTATION] Lead: {rotation['lead']} | Rest: {rotation['rest']} | Supports: {rotation['supports']} | Theme: {theme}")
     await send_night_message(state, config, sisters)
 
-
-@tasks.loop(minutes=random.randint(50, 90))
+@tasks.loop(minutes=random.randint(45, 90))
 async def spontaneous_task():
     await send_spontaneous_task(state, config, sisters)
-
 
 @tasks.loop(time=converted_time(3, 0))
 async def nightly_update_task():
@@ -176,7 +159,6 @@ async def nightly_update_task():
     profile_path = "data/Will_Profile.txt"
     apply_updates_if_sleeping("Will", state, config, profile_path)
 
-
 # ---------------- Loop guards ----------------
 @morning_task.before_loop
 async def before_morning():
@@ -194,7 +176,6 @@ async def before_spontaneous():
 async def before_nightly():
     await asyncio.sleep(20)
 
-
 # ---------------- Run ----------------
 async def run_all():
     for bot in sisters:
@@ -209,7 +190,6 @@ async def run_all():
     ensure_will_systems(state, config, [will_bot])
 
     log_event("[SYSTEM] All tasks started (FastAPI loop).")
-
 
 # ---------------- FastAPI ----------------
 app = FastAPI()
