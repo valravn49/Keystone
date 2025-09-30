@@ -1,0 +1,19 @@
+{
+  "last_active": null,
+  "mood": "neutral",
+  "bad_mood": false,
+  "rotation_index": 0,
+  "theme_index": 0,
+  "relationships": {
+    "Will→Aria": { "affection": 0.5, "teasing": 0.1, "conflict": 0.0 },
+    "Will→Selene": { "affection": 0.6, "teasing": 0.1, "conflict": 0.0 },
+    "Will→Cassandra": { "affection": 0.4, "teasing": 0.0, "conflict": 0.2 },
+    "Will→Ivy": { "affection": 0.7, "teasing": 0.4, "conflict": 0.1 }
+  },
+  "refinements": [],
+  "spontaneous_spoken_today": {},
+  "will_schedule": {
+    "wake": 11,
+    "sleep": 1
+  }
+}
