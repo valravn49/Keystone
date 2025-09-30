@@ -9,7 +9,7 @@ from llm import generate_llm_reply
 from logger import log_event
 from relationships import adjust_relationship
 
-# ---------------- Config ----------------
+# Will's dynamic profile loader
 DEFAULT_PROFILE_PATHS = [
     "data/Will_Profile.txt",
     "/mnt/data/Will_Profile.txt",
@@ -17,13 +17,17 @@ DEFAULT_PROFILE_PATHS = [
 
 WILL_REFINEMENTS_LOG = "data/Will_Refinements_Log.txt"
 
-WILL_MIN_SLEEP = 35 * 60
-WILL_MAX_SLEEP = 95 * 60
+# Chatter pacing
+WILL_MIN_SLEEP = 40 * 60
+WILL_MAX_SLEEP = 100 * 60
 
-INTEREST_HIT_BOOST = 0.35
+# Probabilities
+INTEREST_HIT_BOOST = 0.3
 IVY_BOOST = 0.25
-RANT_CHANCE = 0.10
+DRAMATIC_SHIFT_BASE = 0.04
+RANT_CHANCE = 0.07
 
+# Favorites
 WILL_FAVORITES_POOL = [
     "Legend of Zelda", "Final Fantasy", "League of Legends",
     "Attack on Titan", "Demon Slayer", "My Hero Academia",
@@ -33,9 +37,7 @@ WILL_FAVORITES_POOL = [
     "cosplay communities",
 ]
 
-ALLOWED_NAMES = {"Aria", "Selene", "Cassandra", "Ivy", "Will", "Nick", "Val"}
-
-# ---------------- Helpers ----------------
+# ---------------- Profile ----------------
 def _read_file_first(path_list: List[str]) -> Optional[str]:
     for p in path_list:
         if os.path.exists(p):
@@ -46,24 +48,12 @@ def _read_file_first(path_list: List[str]) -> Optional[str]:
                 continue
     return None
 
-def clean_names(text: str) -> str:
-    """Replace any stray capitalized names with Nick if not in allowed set."""
-    words = text.split()
-    fixed = []
-    for w in words:
-        if w.istitle() and w not in ALLOWED_NAMES:
-            fixed.append("Nick")
-        else:
-            fixed.append(w)
-    return " ".join(fixed)
-
-# ---------------- Profile ----------------
 def load_will_profile() -> Dict:
     text = _read_file_first(DEFAULT_PROFILE_PATHS) or ""
     profile = {
         "interests": ["tech", "games", "anime", "music"],
-        "dislikes": ["drama"],
-        "style": ["casual", "timid", "sometimes playful"],
+        "dislikes": ["conflict", "arguments", "drama"],
+        "style": ["timid", "casual", "hesitant", "sometimes playful"],
         "triggers": ["hype", "memes", "nostalgia"],
         "favorites": WILL_FAVORITES_POOL,
     }
@@ -87,7 +77,7 @@ def load_will_profile() -> Dict:
     return profile
 
 # ---------------- Favorites rotation ----------------
-def get_rotating_favorites(state: Dict, config: Dict, count: int = 3) -> List[str]:
+def get_rotating_favorites(state: Dict, config: Dict, count: int = 2) -> List[str]:
     today = datetime.now().date()
     key = "will_favorites_today"
     if state.get(f"{key}_date") == today and state.get(key):
@@ -145,34 +135,28 @@ def is_will_online(state: Dict, config: Dict) -> bool:
 async def _persona_reply(base_prompt: str, rant: bool = False, timid: bool = True,
                          state: Dict = None, config: Dict = None) -> str:
     profile = load_will_profile()
-    style = ", ".join(profile.get("style", ["casual", "timid"]))
-    personality = "Shy, nerdy, often hesitant but occasionally playful or dramatic."
+    style = ", ".join(profile.get("style", ["timid", "casual"]))
+    personality = "Shy, nerdy, hesitant, often second-guesses himself but warms up when comfortable."
 
     tangent = ""
     if rant and state is not None and config is not None:
         favorites_today = get_rotating_favorites(state, config)
-        if favorites_today and random.random() < 0.7:
-            tangent = f" Mention something about {random.choice(favorites_today)}."
+        if favorites_today and random.random() < 0.6:
+            tangent = f" Maybe mention {random.choice(favorites_today)}."
 
-    tone = "hesitant, soft-spoken" if timid else "more outgoing and expressive"
+    tone = "hesitant, quiet, slightly self-conscious" if timid else "momentarily confident but quick to retreat"
     extra = (
-        f"Make it ranty/animated, 2–3 sentences, playful but dramatic.{tangent}"
+        f"Make it ranty/animated in 2–3 sentences, but still tinged with nervousness.{tangent}"
         if rant else
-        f"Keep it short (1–2 sentences), {style}, brotherly but {tone}."
-    )
-
-    system_reminder = (
-        "Only reference siblings by name (Aria, Selene, Cassandra, Ivy, Will) "
-        "or the user as Nick or Val. Do not invent new names."
+        f"Keep it brief (1–2 sentences), {style}, {tone}."
     )
 
     prompt = (
         f"You are Will. Personality: {personality}. "
-        f"Swearing is allowed if natural. {system_reminder} "
         f"{base_prompt} {extra}"
     )
 
-    reply = await generate_llm_reply(
+    return await generate_llm_reply(
         sister="Will",
         user_message=prompt,
         theme=None,
@@ -180,15 +164,13 @@ async def _persona_reply(base_prompt: str, rant: bool = False, timid: bool = Tru
         history=[],
     )
 
-    return clean_names(reply or "")
-
 # ---------------- Rant Chance Helper ----------------
 def calculate_rant_chance(base: float, interest_score: float = 0, trigger_score: float = 0) -> float:
     now_hour = datetime.now().hour
     rant_chance = base
-    if 20 <= now_hour or now_hour <= 1: rant_chance *= 2
-    if interest_score > 0: rant_chance += 0.15
-    if trigger_score > 0: rant_chance += 0.20
+    if 20 <= now_hour or now_hour <= 1: rant_chance *= 1.5
+    if interest_score > 0: rant_chance += 0.1
+    if trigger_score > 0: rant_chance += 0.15
     return min(rant_chance, 1.0)
 
 # ---------------- Chatter Loop ----------------
@@ -198,14 +180,14 @@ async def will_chatter_loop(state: Dict, config: Dict, sisters):
 
     while True:
         if is_will_online(state, config):
-            base_p = 0.12
-            if random.random() < 0.05: base_p += 0.10
+            base_p = 0.1  # shy baseline
+            if random.random() < 0.05: base_p += 0.08
             if random.random() < base_p:
                 rant_mode = random.random() < calculate_rant_chance(RANT_CHANCE)
-                timid_mode = random.random() > 0.3
+                timid_mode = random.random() > 0.25  # 75% timid
                 try:
                     msg = await _persona_reply(
-                        "Write a group chat comment.",
+                        "Say something small to the group.",
                         rant=rant_mode, timid=timid_mode,
                         state=state, config=config
                     )
@@ -224,31 +206,30 @@ async def will_handle_message(state: Dict, config: Dict, sisters,
     interest_score = _topic_match_score(content, profile.get("interests", []))
     trigger_score = _topic_match_score(content, profile.get("triggers", []))
 
-    p = 0.10 + (interest_score * INTEREST_HIT_BOOST) + (trigger_score * 0.20)
-    if author == "Ivy":
-        p += IVY_BOOST
-    p = min(p, 0.85)
-
-    if "will" in content.lower():
-        p = 1.0
+    p = 0.08 + (interest_score * INTEREST_HIT_BOOST) + (trigger_score * 0.15)
+    if author == "Ivy": p += IVY_BOOST
+    if "will" in content.lower(): p = 1.0
+    p = min(p, 0.9)
 
     if random.random() >= p: return
 
     rant_chance = calculate_rant_chance(RANT_CHANCE, interest_score, trigger_score)
     rant_mode = random.random() < rant_chance
-    timid_mode = random.random() > 0.3
+    timid_mode = random.random() > 0.25
 
     try:
         reply = await _persona_reply(
-            f"{author} said: \"{content}\". Reply like Will would.",
-            rant=rant_mode, timid=timid_mode, state=state, config=config
+            f"{author} said: \"{content}\". Reply shyly, in your own style.",
+            rant=rant_mode, timid=timid_mode,
+            state=state, config=config
         )
         if reply:
             await _post_to_family(reply, "Will", sisters, config)
+            # Relationship nudges
             if author == "Ivy":
-                adjust_relationship(state, "Will", "Ivy", "affection", +0.08)
+                adjust_relationship(state, "Will", "Ivy", "affection", +0.07)
             else:
-                adjust_relationship(state, "Will", author, "affection", +0.05)
+                adjust_relationship(state, "Will", author, "affection", +0.04)
     except Exception as e:
         log_event(f"[ERROR] Will reactive: {e}")
 
