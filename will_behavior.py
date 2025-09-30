@@ -1,4 +1,5 @@
 import os
+import json
 import random
 import asyncio
 from datetime import datetime
@@ -6,119 +7,85 @@ from typing import Dict, Optional, List
 
 from llm import generate_llm_reply
 from logger import log_event
+from relationships import adjust_relationship
 
-# Optional relationship nudge (safe if absent)
-try:
-    from relationships import adjust_relationship
-except Exception:
-    def adjust_relationship(*args, **kwargs):  # type: ignore
-        return None
+# ---------------- File Paths ----------------
+PERSONALITY_FILE = "Autonomy/Personalities/Will.json"
+MEMORY_FILE = "Autonomy/memory/Will.json"
 
-# ----- Config -----
-WILL_PROFILE_PATHS = ["data/Will_Profile.txt", "/mnt/data/Will_Profile.txt"]
-
+# Chatter pacing (seconds)
 WILL_MIN_SLEEP = 35 * 60
 WILL_MAX_SLEEP = 95 * 60
 
+# Probability constants
 INTEREST_HIT_BOOST = 0.35
 IVY_BOOST = 0.25
-DRAMATIC_SHIFT_BASE = 0.05
 RANT_CHANCE = 0.10
 
-WILL_FAVORITES_POOL = [
-    "Legend of Zelda", "Final Fantasy", "League of Legends",
-    "Attack on Titan", "Demon Slayer", "My Hero Academia",
-    "Star Wars", "Marvel movies", "PC building",
-    "retro game consoles", "new anime OSTs", "VR headsets",
-    "streaming marathons", "indie games", "tech reviews",
-    "cosplay communities",
-]
 
-# ----- Helpers: file / profile -----
-def _read_first(paths: List[str]) -> str:
-    for p in paths:
-        if os.path.exists(p):
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    return f.read()
-            except Exception:
-                continue
-    return ""
+# ---------------- JSON Helpers ----------------
+def load_json(path: str, default: Dict) -> Dict:
+    """Load JSON file or create with default if missing."""
+    if not os.path.exists(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(default, f, indent=2)
+        return default
 
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log_event(f"[ERROR] Failed to load {path}: {e}")
+        return default
+
+
+def save_json(path: str, data: Dict):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        log_event(f"[ERROR] Failed to save {path}: {e}")
+
+
+# ---------------- Personality / Memory ----------------
 def load_will_profile() -> Dict:
-    txt = _read_first(WILL_PROFILE_PATHS)
-    profile = {
+    defaults = {
+        "name": "Will",
         "interests": ["tech", "games", "anime", "music"],
         "dislikes": ["drama"],
         "style": ["casual", "timid", "sometimes playful"],
-        "triggers": ["hype", "memes", "nostalgia"],
-        "favorites": WILL_FAVORITES_POOL[:],
+        "triggers": ["hype", "memes", "nostalgia", "Ivy teasing"],
+        "favorites": ["Legend of Zelda", "Final Fantasy", "League of Legends"],
+        "speech_patterns": {
+            "timid": "hesitant, soft-spoken, sometimes trailing off",
+            "outgoing": "excited, fast, sometimes overshares when flustered"
+        },
+        "swearing_allowed": True
     }
-    for line in txt.splitlines():
-        low = line.strip().lower()
-        if low.startswith("interests:"):
-            vals = [x.strip() for x in line.split(":", 1)[1].split(",") if x.strip()]
-            if vals: profile["interests"] = vals
-        elif low.startswith("dislikes:"):
-            vals = [x.strip() for x in line.split(":", 1)[1].split(",") if x.strip()]
-            if vals: profile["dislikes"] = vals
-        elif low.startswith("style:"):
-            vals = [x.strip() for x in line.split(":", 1)[1].split(",") if x.strip()]
-            if vals: profile["style"] = vals
-        elif low.startswith("triggers:"):
-            vals = [x.strip() for x in line.split(":", 1)[1].split(",") if x.strip()]
-            if vals: profile["triggers"] = vals
-        elif low.startswith("favorites:"):
-            vals = [x.strip() for x in line.split(":", 1)[1].split(",") if x.strip()]
-            if vals: profile["favorites"] = vals
-    return profile
+    return load_json(PERSONALITY_FILE, defaults)
 
-def _topic_match_score(content: str, keywords: List[str]) -> float:
-    if not content or not keywords:
-        return 0.0
-    text = content.lower()
-    return sum(1.0 for kw in keywords if kw.lower() in text)
 
-# ----- Favorites rotation & organic expansion -----
-def get_rotating_favorites(state: Dict, count: int = 3) -> List[str]:
-    today = datetime.now().date()
-    key = "will_favorites_today"
-    if state.get(f"{key}_date") == today and state.get(key):
-        return state[key]
-    pool = load_will_profile().get("favorites", WILL_FAVORITES_POOL)
-    picks = random.sample(pool, min(count, len(pool)))
-    state[key] = picks
-    state[f"{key}_date"] = today
-    return picks
+def load_will_memory() -> Dict:
+    defaults = {
+        "last_active": None,
+        "mood": "neutral",
+        "bad_mood": False,
+        "rotation_index": 0,
+        "theme_index": 0,
+        "relationships": {},
+        "refinements": [],
+        "spontaneous_spoken_today": {},
+        "will_schedule": {"wake": 11, "sleep": 1}
+    }
+    return load_json(MEMORY_FILE, defaults)
 
-def maybe_expand_favorites(state: Dict) -> None:
-    """Occasionally add new items to favorites based on recent chat history cues."""
-    hist = state.get("history", {})
-    if not hist or random.random() > 0.20:
-        return
-    # Take last ~10 snippets and mine simple nouns (very naive)
-    recent = " ".join(list(hist.values())[-10:])
-    candidates = []
-    for token in re.findall(r"[A-Za-z][A-Za-z0-9'\-]{2,}", recent):
-        if token.lower() in {"and","the","for","with","you","that","this","they","them","her","his"}:
-            continue
-        if token[0].isupper():  # cheap proper-noun-ish
-            candidates.append(token)
-    if not candidates:
-        return
-    new_pick = random.choice(candidates)
-    profile = load_will_profile()
-    favs = profile.get("favorites", [])
-    if new_pick not in favs:
-        favs.append(new_pick)
-        # Persist gently (best-effort)
-        try:
-            with open(WILL_PROFILE_PATHS[0], "a", encoding="utf-8") as f:
-                f.write(f"\nFavorites: {', '.join(favs)}\n")
-        except Exception:
-            pass
 
-# ----- Messaging -----
+def save_will_memory(data: Dict):
+    save_json(MEMORY_FILE, data)
+
+
+# ---------------- Messaging ----------------
 async def _post_to_family(message: str, sender: str, sisters, config: Dict):
     for bot in sisters:
         if bot.is_ready() and bot.sister_info["name"] == sender:
@@ -131,24 +98,53 @@ async def _post_to_family(message: str, sender: str, sisters, config: Dict):
                 log_event(f"[ERROR] Will send: {e}")
             break
 
-# ----- Schedule / awake -----
+
+# ---------------- Persona wrapper ----------------
+async def _persona_reply(base_prompt: str, rant: bool = False, timid: bool = True) -> str:
+    profile = load_will_profile()
+    style = ", ".join(profile.get("style", []))
+    personality = "Shy, nerdy, often hesitant but occasionally playful or dramatic."
+
+    tone = "hesitant, soft-spoken" if timid else "more outgoing and expressive"
+    extra = (
+        f"Make it ranty/animated, 2–3 sentences, playful but dramatic."
+        if rant else
+        f"Keep it short (1–2 sentences), {style}, brotherly but {tone}."
+    )
+
+    prompt = (
+        f"You are Will. Personality: {personality}. "
+        f"Speech style: {tone}. "
+        f"{base_prompt} {extra}"
+    )
+
+    return await generate_llm_reply(
+        sister="Will",
+        user_message=prompt,
+        theme=None,
+        role="sibling",
+        history=[],
+    )
+
+
+# ---------------- Schedule ----------------
 def assign_will_schedule(state: Dict, config: Dict):
+    mem = load_will_memory()
     today = datetime.now().date()
-    key = "will_schedule"
-    if state.get(f"{key}_date") == today and state.get(key):
-        return state[key]
+
+    if mem.get("schedule_date") == str(today):
+        return mem["will_schedule"]
+
     scfg = config.get("schedules", {}).get("Will", {"wake": [10, 12], "sleep": [0, 2]})
-    wake_rng = scfg.get("wake", [10, 12])
-    sleep_rng = scfg.get("sleep", [0, 2])
+    wake = random.randint(*scfg.get("wake", [10, 12]))
+    sleep = random.randint(*scfg.get("sleep", [0, 2]))
 
-    def _pick(hr):
-        lo, hi = int(hr[0]), int(hr[1])
-        return random.randint(lo, hi) if hi >= lo else lo
+    mem["will_schedule"] = {"wake": wake, "sleep": sleep}
+    mem["schedule_date"] = str(today)
+    save_will_memory(mem)
 
-    schedule = {"wake": _pick(wake_rng), "sleep": _pick(sleep_rng)}
-    state[key] = schedule
-    state[f"{key}_date"] = today
-    return schedule
+    return mem["will_schedule"]
+
 
 def is_will_online(state: Dict, config: Dict) -> bool:
     sc = assign_will_schedule(state, config)
@@ -160,69 +156,33 @@ def is_will_online(state: Dict, config: Dict) -> bool:
         return wake <= now_hour < sleep
     return now_hour >= wake or now_hour < sleep
 
-# ----- Persona wrapper (timid baseline; bursts allowed) -----
-async def _persona_reply(base_prompt: str, rant: bool = False, timid: bool = True, state: Dict = None) -> str:
-    profile = load_will_profile()
-    style = ", ".join(profile.get("style", ["casual", "timid"]))
-    personality = "Shy, nerdy, hesitant but occasionally playful or dramatic."
-    tone = "hesitant, soft-spoken" if timid else "briefly more outgoing and expressive"
 
-    if rant:
-        extra = "Make it a brief, animated 2–3 sentence burst; playful but not overbearing."
-    else:
-        extra = f"Keep it short (1–2 sentences), {style}, brotherly, and {tone}."
-
-    prompt = (
-        f"You are Will. Personality: {personality}. "
-        f"Swearing is allowed if natural. "
-        f"{base_prompt} {extra}"
-    )
-    return await generate_llm_reply(
-        sister="Will",
-        user_message=prompt,
-        theme=None,
-        role="sister",
-        history=[],
-    )
-
-def calculate_rant_chance(base: float, interest_score: float = 0, trigger_score: float = 0) -> float:
-    now_hour = datetime.now().hour
-    rant_chance = base
-    if 20 <= now_hour or now_hour <= 1:
-        rant_chance *= 2
-    if interest_score > 0:
-        rant_chance += 0.15
-    if trigger_score > 0:
-        rant_chance += 0.20
-    return min(rant_chance, 1.0)
-
-# ----- Chatter loop -----
+# ---------------- Chatter Loop ----------------
 async def will_chatter_loop(state: Dict, config: Dict, sisters):
-    if state.get("will_chatter_started"):
+    mem = load_will_memory()
+    if mem.get("chatter_started"):
         return
-    state["will_chatter_started"] = True
+    mem["chatter_started"] = True
+    save_will_memory(mem)
 
     while True:
         if is_will_online(state, config):
-            base_p = 0.10  # shy baseline
-            if random.random() < 0.05:
-                base_p += 0.10
-            if random.random() < base_p:
-                rant_mode = random.random() < calculate_rant_chance(RANT_CHANCE)
-                timid_mode = random.random() > 0.35  # ~65% timid
+            if random.random() < 0.12:  # base shy chance
+                rant_mode = random.random() < RANT_CHANCE
+                timid_mode = random.random() > 0.3
                 try:
                     msg = await _persona_reply(
-                        "Write a tiny but natural group chat comment.",
-                        rant=rant_mode, timid=timid_mode, state=state
+                        "Write a group chat comment.",
+                        rant=rant_mode, timid=timid_mode
                     )
                     if msg:
                         await _post_to_family(msg, "Will", sisters, config)
-                        maybe_expand_favorites(state)
                 except Exception as e:
                     log_event(f"[ERROR] Will chatter: {e}")
         await asyncio.sleep(random.randint(WILL_MIN_SLEEP, WILL_MAX_SLEEP))
 
-# ----- Reactive handler -----
+
+# ---------------- Reactive Handler ----------------
 async def will_handle_message(state: Dict, config: Dict, sisters, author: str, content: str, channel_id: int):
     if not is_will_online(state, config):
         return
@@ -236,32 +196,41 @@ async def will_handle_message(state: Dict, config: Dict, sisters, author: str, c
         p += IVY_BOOST
     p = min(p, 0.85)
 
-    # Direct mention forces reply
-    if "will" in content.lower() or "<@will>" in content.lower():
+    if "will" in content.lower():
         p = 1.0
 
     if random.random() >= p:
         return
 
-    rant_chance = calculate_rant_chance(RANT_CHANCE, interest_score, trigger_score)
-    rant_mode = random.random() < rant_chance
+    rant_mode = random.random() < RANT_CHANCE
     timid_mode = random.random() > 0.3
 
     try:
         reply = await _persona_reply(
             f"{author} said: \"{content}\". Reply like Will would.",
-            rant=rant_mode, timid=timid_mode, state=state
+            rant=rant_mode, timid=timid_mode
         )
         if reply:
             await _post_to_family(reply, "Will", sisters, config)
-            if callable(adjust_relationship):
-                delta = 0.08 if author == "Ivy" else 0.05
-                adjust_relationship(state, "Will", author, "affection", +delta)
+            if author == "Ivy":
+                adjust_relationship(state, "Will", "Ivy", "affection", +0.08)
+            else:
+                adjust_relationship(state, "Will", author, "affection", +0.05)
     except Exception as e:
         log_event(f"[ERROR] Will reactive: {e}")
 
-# ----- Startup helper -----
+
+# ---------------- Startup ----------------
 def ensure_will_systems(state: Dict, config: Dict, sisters):
     assign_will_schedule(state, config)
-    if not state.get("will_chatter_started"):
+    mem = load_will_memory()
+    if not mem.get("chatter_started"):
         asyncio.create_task(will_chatter_loop(state, config, sisters))
+
+
+# ---------------- Topic Helper ----------------
+def _topic_match_score(content: str, keywords: List[str]) -> float:
+    if not content or not keywords:
+        return 0.0
+    text = content.lower()
+    return sum(1.0 for kw in keywords if kw.lower() in text)
