@@ -1,132 +1,91 @@
-# self_update.py
 import os
 import json
+import random
 from datetime import datetime
 from logger import log_event
 
-UPDATES_DIR = "data/updates"
-REFINEMENTS_LOG_DIR = "data/refinements"
+# ---------------- Queue & Apply ----------------
+UPDATE_QUEUE = {}
 
-# Ensure directories exist
-os.makedirs(UPDATES_DIR, exist_ok=True)
-os.makedirs(REFINEMENTS_LOG_DIR, exist_ok=True)
-
-
-def _update_file_path(name: str) -> str:
-    return os.path.join(UPDATES_DIR, f"{name}_updates.json")
-
-
-def _log_file_path(name: str) -> str:
-    return os.path.join(REFINEMENTS_LOG_DIR, f"{name}_log.txt")
-
-
-# ---------------- Queueing ----------------
 def queue_update(name: str, update: dict):
-    """Save a requested or organic update to the update queue."""
-    path = _update_file_path(name)
-    updates = []
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                updates = json.load(f)
-        except Exception:
-            updates = []
+    """Queue a behavior/personality update for a sibling."""
+    q = UPDATE_QUEUE.setdefault(name, [])
+    q.append(update)
+    log_event(f"[UPDATE-QUEUED] {name}: {update}")
 
-    updates.append({
-        "timestamp": datetime.now().isoformat(),
-        "update": update,
-    })
+def _is_sleeping(state, name: str, config: dict) -> bool:
+    """Rough awake/sleep check: sisters by wake/bed in config, Will by schedule."""
+    now_hour = datetime.now().hour
+    if name == "Will":
+        sc = state.get("will_schedule")
+        if not sc:
+            return True
+        wake, sleep = sc["wake"], sc["sleep"]
+        if wake < sleep:
+            return not (wake <= now_hour < sleep)
+        return not (now_hour >= wake or now_hour < sleep)
+    else:
+        sister_cfg = next((s for s in config["rotation"] if s["name"] == name), {})
+        wake = int(sister_cfg.get("wake", "6:00").split(":")[0])
+        bed = int(sister_cfg.get("bed", "22:00").split(":")[0])
+        if wake < bed:
+            return not (wake <= now_hour < bed)
+        return not (now_hour >= wake or now_hour < bed)
 
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(updates, f, indent=2)
-
-    log_event(f"[UPDATE QUEUED] {name}: {update}")
-
-
-# ---------------- Application ----------------
-def apply_updates_if_sleeping(name: str, state: dict, config: dict, profile_path: str):
-    """Apply queued updates if the bot is asleep."""
-    from sisters_behavior import get_today_rotation, is_awake
-    lead = get_today_rotation(state, config)["lead"]
-
-    sister_cfg = next((s for s in config["rotation"] if s["name"] == name), None)
-    if not sister_cfg:
-        return
-
-    if is_awake(sister_cfg, lead):
-        return  # Awake → defer updates
-
-    path = _update_file_path(name)
-    if not os.path.exists(path):
-        return
-
+def _persist_update_to_profile(name: str, update: dict):
+    """Append update to that sibling’s profile text file (best-effort)."""
+    path = f"data/{name}_Profile.txt"
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            updates = json.load(f)
-    except Exception:
-        updates = []
+        os.makedirs("data", exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"\n# {datetime.now().isoformat()} UPDATE\n{json.dumps(update)}\n")
+    except Exception as e:
+        log_event(f"[ERROR] Persist {name}: {e}")
 
+def apply_updates_if_sleeping(name: str, state, config, profile_path: str = None):
+    """Apply queued updates if sibling is sleeping."""
+    if not _is_sleeping(state, name, config):
+        return
+    updates = UPDATE_QUEUE.pop(name, [])
     if not updates:
         return
+    for upd in updates:
+        log_event(f"[UPDATE-APPLIED] {name}: {upd}")
+        if profile_path:
+            _persist_update_to_profile(name, upd)
 
-    # Load profile (or create baseline)
-    if os.path.exists(profile_path):
-        try:
-            with open(profile_path, "r", encoding="utf-8") as f:
-                profile_text = f.read()
-        except Exception:
-            profile_text = ""
+# ---------------- Organic drift ----------------
+def generate_organic_updates(config, state):
+    """
+    Create organic update candidates for each sibling.
+    Called nightly by main.py.
+    """
+    updates = {}
+    for s in config["rotation"]:
+        n = s["name"]
+        updates[n] = []
+        if n == "Aria":
+            if random.random() < 0.5:
+                updates[n].append({"behavior": "Speak less about books; more about present feelings and siblings."})
+        elif n == "Selene":
+            if random.random() < 0.5:
+                updates[n].append({"behavior": "Tone shifts to gentler, indulgent responses today."})
+            else:
+                updates[n].append({"behavior": "Tone steadies; pragmatic and thoughtful."})
+        elif n == "Cassandra":
+            if random.random() < 0.5:
+                updates[n].append({"behavior": "Softens slightly; still firm but warmer in tone."})
+            else:
+                updates[n].append({"behavior": "Doubles down on discipline; sharper tone today."})
+        elif n == "Ivy":
+            if random.random() < 0.5:
+                updates[n].append({"behavior": "Brattiness more extreme today."})
+            else:
+                updates[n].append({"behavior": "Affection more extreme today."})
+    # Will separately
+    updates["Will"] = []
+    if random.random() < 0.5:
+        updates["Will"].append({"behavior": "More timid; quieter and hesitant."})
     else:
-        profile_text = ""
-
-    applied = []
-    for entry in updates:
-        upd = entry.get("update", {})
-        if "personality_shift" in upd:
-            profile_text += f"\n[Shift {entry['timestamp']}]: {upd['personality_shift']}"
-        if "behavior" in upd:
-            profile_text += f"\n[Behavior {entry['timestamp']}]: {upd['behavior']}"
-        if "schedule" in upd:
-            profile_text += f"\n[Schedule {entry['timestamp']}]: {upd['schedule']}"
-
-        applied.append(upd)
-
-    # Write back updated profile
-    with open(profile_path, "w", encoding="utf-8") as f:
-        f.write(profile_text)
-
-    # Append to refinements log
-    with open(_log_file_path(name), "a", encoding="utf-8") as f:
-        for upd in applied:
-            f.write(f"{datetime.now().isoformat()} | {json.dumps(upd)}\n")
-
-    # Clear queue after applying
-    os.remove(path)
-    log_event(f"[UPDATES APPLIED] {name}: {applied}")
-
-
-# ---------------- Organic Update Rules ----------------
-def generate_organic_updates(config: dict, state: dict) -> dict:
-    """Return a dictionary of possible organic updates for each sibling."""
-    return {
-        "Aria": [
-            {"personality_shift": "Becomes softer when Cassandra is stricter"},
-            {"personality_shift": "More reflective when Ivy is being bratty"},
-        ],
-        "Selene": [
-            {"personality_shift": "Acts more motherly when Will is shy"},
-            {"personality_shift": "Becomes protective when Aria withdraws"},
-        ],
-        "Cassandra": [
-            {"personality_shift": "Gets stricter when Ivy pushes boundaries"},
-            {"personality_shift": "Softens slightly when Selene comforts her"},
-        ],
-        "Ivy": [
-            {"personality_shift": "Brattier when ignored"},
-            {"personality_shift": "Affectionate when Will retreats"},
-        ],
-        "Will": [
-            {"personality_shift": "Bursts of outgoing energy"},
-            {"personality_shift": "Quick to retreat if overwhelmed"},
-        ],
-    }
+        updates["Will"].append({"behavior": "Outgoing burst potential today, but quicker to retreat if flustered."})
+    return updates
