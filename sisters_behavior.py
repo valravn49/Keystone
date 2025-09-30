@@ -1,3 +1,4 @@
+# sisters_behavior.py
 import random
 import asyncio
 from datetime import datetime, timedelta
@@ -5,46 +6,72 @@ from datetime import datetime, timedelta
 from llm import generate_llm_reply
 from logger import log_event, append_ritual_log
 from workouts import get_today_workout
-from relationships import plot_relationships  # plotting only
+from relationships import plot_relationships
 
-# Persona tones for rituals
+# Persona tones with variations
 PERSONA_TONES = {
     "Aria": {
-        "intro_morning": "Good morning — be gentle with yourself today; remember your duties and care.",
-        "intro_night": "Time to rest, sweet one. Reflect kindly on your progress.",
+        "intro_morning": [
+            "Good morning — be gentle with yourself today; remember your duties and care.",
+            "Rise gently — today is another chance to grow with kindness.",
+            "Morning, dear one. Keep steady and nurture your responsibilities.",
+        ],
+        "intro_night": [
+            "Time to rest, sweet one. Reflect kindly on your progress.",
+            "The day is done — let peace find you tonight.",
+            "Rest now, and tomorrow we’ll walk forward together.",
+        ],
     },
     "Selene": {
-        "intro_morning": "Good morning, darling — take things slowly and be kind to your body today.",
-        "intro_night": "Sleep well, my dear. I’ve been thinking of your care and comfort.",
+        "intro_morning": [
+            "Good morning, darling — take things slowly and be kind to your body today.",
+            "Rise softly, love. Let’s treat today with care.",
+            "Morning, sweetheart. Ease into today with grace.",
+        ],
+        "intro_night": [
+            "Sleep well, my dear. I’ve been thinking of your care and comfort.",
+            "Close your eyes, darling. You’re safe and cherished.",
+            "The night embraces you — rest with warmth and calm.",
+        ],
     },
     "Cassandra": {
-        "intro_morning": "Morning. Be prepared, stay disciplined, and do not slack.",
-        "intro_night": "The day is done. Review your discipline and rest ready for tomorrow.",
+        "intro_morning": [
+            "Morning. Be prepared, stay disciplined, and do not slack.",
+            "Rise sharp — the day demands order and resolve.",
+            "Stand tall this morning. Your discipline will guide you.",
+        ],
+        "intro_night": [
+            "The day is done. Review your discipline and rest ready for tomorrow.",
+            "Sleep now, knowing you’ve given what you could.",
+            "Night falls — keep your focus ready for the dawn.",
+        ],
     },
     "Ivy": {
-        "intro_morning": "Wake up, sleepyhead~ Don’t dawdle or I’ll tease you all day.",
-        "intro_night": "Bedtime already? Tuck in, cutie — naughty dreams await.",
+        "intro_morning": [
+            "Wake up, sleepyhead~ Don’t dawdle or I’ll tease you all day.",
+            "Mornin’, cutie~ I hope you’re ready for trouble.",
+            "Rise and shine, or I’ll pull the covers off you!",
+        ],
+        "intro_night": [
+            "Bedtime already? Tuck in, cutie — naughty dreams await.",
+            "The night’s here~ Don’t stay up too late without me.",
+            "Sweet dreams~ try not to miss me too much.",
+        ],
     },
 }
 
 # ---------------- Helpers ----------------
 def get_today_rotation(state, config):
-    """Return current rotation of lead/rest/supports."""
     idx = state["rotation_index"] % len(config["rotation"])
     lead = config["rotation"][idx]["name"]
     rest = config["rotation"][(idx + 1) % len(config["rotation"])]["name"]
     supports = [s["name"] for s in config["rotation"] if s["name"] not in [lead, rest]]
     return {"lead": lead, "rest": rest, "supports": supports}
 
-
 def advance_rotation(state, config):
-    """Advance the rotation index by one step."""
     state["rotation_index"] = (state.get("rotation_index", 0) + 1) % len(config["rotation"])
-    return get_today_rotation(state, config)
-
 
 def get_current_theme(state, config):
-    """Update theme once a week (Monday)."""
     today = datetime.now().date()
     if state.get("last_theme_update") is None or (
         today.weekday() == 0 and state.get("last_theme_update") != today
@@ -53,9 +80,8 @@ def get_current_theme(state, config):
         state["last_theme_update"] = today
     return config["themes"][state.get("theme_index", 0)]
 
-
 def is_awake(sister_info, lead_name):
-    """Check if a sister is awake. Lead is always awake."""
+    """Check if sister is awake unless she’s lead (then always awake)."""
     if sister_info["name"] == lead_name:
         return True
     now = datetime.now().time()
@@ -65,9 +91,8 @@ def is_awake(sister_info, lead_name):
         return wake <= now <= bed
     return now >= wake or now <= bed
 
-
 async def post_to_family(message: str, sender, sisters, config):
-    """Send to family channel via correct bot instance."""
+    """Send to family channel through the correct bot instance."""
     for bot in sisters:
         if bot.sister_info["name"] == sender and bot.is_ready():
             try:
@@ -81,15 +106,17 @@ async def post_to_family(message: str, sender, sisters, config):
 
 # ---------------- Persona wrapper ----------------
 async def _persona_reply(sname, role, base_prompt, theme, history, config):
-    """LLM wrapper for generating sister responses."""
     sister_cfg = next((s for s in config["rotation"] if s["name"] == sname), {})
     personality = sister_cfg.get("personality", "Neutral personality.")
     allow_swear = sister_cfg.get("swearing_allowed", False)
 
+    if sname == "Aria":
+        base_prompt += " Avoid always framing thoughts only in terms of books — vary with personal feelings, shared memories, or gentle advice."
+
     prompt = (
         f"You are {sname}. Personality: {personality}. "
         f"Tone: {role}. "
-        f"{'Swearing is allowed if natural.' if allow_swear else 'Do not swear.'} "
+        f"{'Swearing is allowed if it feels natural.' if allow_swear else 'Do not swear.'} "
         f"{base_prompt}"
     )
 
@@ -101,41 +128,14 @@ async def _persona_reply(sname, role, base_prompt, theme, history, config):
         history=history,
     )
 
-# ---------------- Organic Relationship Adjustment ----------------
-def adjust_relationships_from_reflection(state, speaker, text, siblings):
-    """Aria nudges relationships based on tone in her reflections."""
-    if speaker != "Aria":
-        return
-
-    rels = state.setdefault("relationships", {})
-    mentioned = [sib for sib in siblings if sib.lower() in text.lower()]
-    if not mentioned:
-        mentioned = random.sample(siblings, k=min(2, len(siblings)))
-
-    for sib in mentioned:
-        if sib == speaker:
-            continue
-        key = f"{speaker}→{sib}"
-        rel = rels.setdefault(key, {"affection": 0.0, "teasing": 0.0, "conflict": 0.0})
-
-        if any(word in text.lower() for word in ["care", "kind", "proud", "support"]):
-            rel["affection"] += round(random.uniform(0.05, 0.15), 2)
-        elif any(word in text.lower() for word in ["lazy", "disappoint", "slack"]):
-            rel["conflict"] += round(random.uniform(0.05, 0.10), 2)
-        elif any(word in text.lower() for word in ["tease", "fun", "playful"]):
-            rel["teasing"] += round(random.uniform(0.05, 0.12), 2)
-        else:
-            rel["affection"] += round(random.uniform(0.02, 0.08), 2)
-
-        log_event(f"[REL] Aria’s reflection nudged relationship with {sib}: {rel}")
-
 # ---------------- Rituals ----------------
 async def send_morning_message(state, config, sisters):
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
-    lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
+    lead = rotation["lead"]
 
-    intro = PERSONA_TONES.get(lead, {}).get("intro_morning", "Good morning.")
+    intro_options = PERSONA_TONES.get(lead, {}).get("intro_morning", ["Good morning."])
+    intro = random.choice(intro_options)
     try:
         lead_msg = await _persona_reply(
             lead, "lead",
@@ -151,30 +151,15 @@ async def send_morning_message(state, config, sisters):
     await post_to_family(lead_msg, sender=lead, sisters=sisters, config=config)
     append_ritual_log(lead, "lead", theme, lead_msg)
 
-    adjust_relationships_from_reflection(state, lead, lead_msg, [s["name"] for s in config["rotation"]])
-
-    for s in supports:
-        if is_awake(next(bot.sister_info for bot in sisters if bot.sister_info["name"] == s), lead):
-            if random.random() < 0.7:
-                reply = await _persona_reply(
-                    s, "support",
-                    "Write a short supportive morning comment (1–2 sentences).",
-                    theme, [], config
-                )
-                if reply:
-                    await post_to_family(reply, sender=s, sisters=sisters, config=config)
-                    append_ritual_log(s, "support", theme, reply)
-
-    # Advance rotation in the morning
     advance_rotation(state, config)
-
 
 async def send_night_message(state, config, sisters):
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
-    lead, rest, supports = rotation["lead"], rotation["rest"], rotation["supports"]
+    lead = rotation["lead"]
 
-    intro = PERSONA_TONES.get(lead, {}).get("intro_night", "Good night.")
+    intro_options = PERSONA_TONES.get(lead, {}).get("intro_night", ["Good night."])
+    intro = random.choice(intro_options)
     try:
         lead_msg = await _persona_reply(
             lead, "lead",
@@ -191,26 +176,9 @@ async def send_night_message(state, config, sisters):
     await post_to_family(lead_msg, sender=lead, sisters=sisters, config=config)
     append_ritual_log(lead, "lead", theme, lead_msg)
 
-    adjust_relationships_from_reflection(state, lead, lead_msg, [s["name"] for s in config["rotation"]])
-
-    for s in supports:
-        if is_awake(next(bot.sister_info for bot in sisters if bot.sister_info["name"] == s), lead):
-            if random.random() < 0.6:
-                reply = await _persona_reply(
-                    s, "support",
-                    "Write a short supportive night comment (1–2 sentences).",
-                    theme, [], config
-                )
-                if reply:
-                    await post_to_family(reply, sender=s, sisters=sisters, config=config)
-                    append_ritual_log(s, "support", theme, reply)
-
-    # ✅ Advance rotation at night too
-    advance_rotation(state, config)
-
 # ---------------- Spontaneous ----------------
 async def send_spontaneous_task(state, config, sisters):
-    """Trigger a spontaneous chat message with fairness & cooldowns."""
+    """Trigger a spontaneous chat message with fairness & cooldowns, with conversation chaining."""
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
     lead = rotation["lead"]
@@ -225,24 +193,14 @@ async def send_spontaneous_task(state, config, sisters):
         if not is_awake(bot.sister_info, lead):
             continue
         last_time = cooldowns.get(sname)
-        if last_time and (now - last_time).total_seconds() < 5400:
+        if last_time and (now - last_time).total_seconds() < 3600:
             continue
         awake.append(sname)
 
     if not awake:
         return
 
-    weights = []
-    for s in awake:
-        base = 1.0
-        if s == last_speaker:
-            base *= 0.2
-        spoken_today = state.setdefault("spontaneous_spoken_today", {})
-        if not spoken_today.get(s) or spoken_today[s].date() != now.date():
-            base *= 2.0
-        weights.append(base)
-
-    sister = random.choices(awake, weights=weights, k=1)[0]
+    sister = random.choice(awake)
 
     try:
         msg = await _persona_reply(
@@ -256,12 +214,39 @@ async def send_spontaneous_task(state, config, sisters):
             state["last_spontaneous_speaker"] = sister
             cooldowns[sister] = now
             state.setdefault("spontaneous_spoken_today", {})[sister] = now
+
+            # Start a conversation chain
+            await _maybe_continue_conversation(state, config, sisters, sister, msg, theme)
+
     except Exception as e:
         log_event(f"[ERROR] Spontaneous task failed for {sister}: {e}")
 
+# ---------------- Conversation chaining ----------------
+async def _maybe_continue_conversation(state, config, sisters, starter, starter_msg, theme, depth=0):
+    if depth > 3:
+        return
+    chance = 0.6 - (depth * 0.2)
+    if random.random() > chance:
+        return
+
+    possible_repliers = [s["name"] for s in config["rotation"] if s["name"] != starter]
+    replier = random.choice(possible_repliers)
+
+    try:
+        reply = await _persona_reply(
+            replier, "support",
+            f"Reply naturally to {starter}'s message: \"{starter_msg}\" in 1–2 sentences. Make it feel conversational.",
+            theme, [], config
+        )
+        if reply:
+            await post_to_family(reply, sender=replier, sisters=sisters, config=config)
+            log_event(f"[CHAIN] {replier} → {starter}: {reply}")
+            await _maybe_continue_conversation(state, config, sisters, replier, reply, theme, depth+1)
+    except Exception as e:
+        log_event(f"[ERROR] Conversation chain failed: {e}")
+
 # ---------------- Interaction ----------------
 async def handle_sister_message(state, config, sisters, author, content, channel_id):
-    """Handle sister replies to user messages."""
     rotation = get_today_rotation(state, config)
     theme = get_current_theme(state, config)
     lead = rotation["lead"]
@@ -276,13 +261,7 @@ async def handle_sister_message(state, config, sisters, author, content, channel
         if sname.lower() in content.lower() or "everyone" in content.lower():
             chance = 1.0
         else:
-            chance = 0.2
-            if sname == lead:
-                chance = 0.8
-            elif sname in rotation["supports"]:
-                chance = 0.5
-            elif sname == rotation["rest"]:
-                chance = 0.1
+            chance = 0.3 if sname in rotation["supports"] else 0.15
 
         if random.random() < chance:
             try:
@@ -294,5 +273,6 @@ async def handle_sister_message(state, config, sisters, author, content, channel
                 if reply:
                     await post_to_family(reply, sender=sname, sisters=sisters, config=config)
                     log_event(f"[CHAT] {sname} → {author}: {reply}")
+                    await _maybe_continue_conversation(state, config, sisters, sname, reply, theme)
             except Exception as e:
                 log_event(f"[ERROR] Sister reply failed for {sname}: {e}")
