@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from llm import generate_llm_reply
 from logger import log_event, append_ritual_log
 from workouts import get_today_workout
-from relationships import adjust_relationships, plot_relationships
+from relationships import adjust_relationship, plot_relationships
 
 # Persona tones for ritual starters
 PERSONA_TONES = {
