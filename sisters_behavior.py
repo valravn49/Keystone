@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, time
 from llm import generate_llm_reply
 from logger import log_event, append_ritual_log
 from workouts import get_today_workout
-from outfit_manager import maybe_generate_outfit_image  # 🪞 Outfit integration
+from outfit_manager import maybe_generate_outfit_image  
 
 # ---------------------------------------------------------------------------
 # Personality tones for ritual OPENERS
