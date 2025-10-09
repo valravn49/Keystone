@@ -1,19 +1,14 @@
 {
-  "last_active": null,
-  "mood": "neutral",
-  "bad_mood": false,
-  "rotation_index": 0,
-  "theme_index": 0,
-  "relationships": {
-    "Will→Aria": { "affection": 0.5, "teasing": 0.1, "conflict": 0.0 },
-    "Will→Selene": { "affection": 0.6, "teasing": 0.1, "conflict": 0.0 },
-    "Will→Cassandra": { "affection": 0.4, "teasing": 0.0, "conflict": 0.2 },
-    "Will→Ivy": { "affection": 0.7, "teasing": 0.4, "conflict": 0.1 }
+  "projects": {
+    "Cable management revamp": {
+      "progress": 0.44,
+      "note": "sorting desk wiring and re-routing monitor setup",
+      "updated": "2025-10-09T06:00:00"
+    }
   },
-  "refinements": [],
-  "spontaneous_spoken_today": {},
-  "will_schedule": {
-    "wake": 11,
-    "sleep": 1
-  }
+  "recent_notes": [
+    "Ivy said my setup finally looks ‘not tragic’.",
+    "Need a smaller Velcro tie pack for the last bit under the desk."
+  ],
+  "last_outfit_prompt": null
 }
