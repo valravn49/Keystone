@@ -1,25 +1,17 @@
-import json
-import os
-import random
-import asyncio
-from datetime import datetime, timedelta, time
+# sisters_behavior.py
+# Conversational sibling dynamics + outfit caps + AEDT-aware rituals
+
+import json, os, random, asyncio
+from datetime import datetime, timedelta, time, timezone
 from zoneinfo import ZoneInfo
 
 from llm import generate_llm_reply
 from logger import log_event, append_ritual_log
 from workouts import get_today_workout
 
-# If you have a real image backend, provide image_utils.generate_from_portrait
-try:
-    import image_utils  # must expose: generate_from_portrait(base_path, prompt, save_path) -> str|None
-except Exception:
-    image_utils = None
+AEDT = ZoneInfo("Australia/Sydney")  # handles AEST/AEDT automatically
 
-AEDT = ZoneInfo("Australia/Sydney")
-
-# ---------------------------------------------------------------------------
-# Ritual opener variations (short + siblingy)
-# ---------------------------------------------------------------------------
+# ---------------- Personality opener variations ----------------
 PERSONA_TONES = {
     "Aria": {
         "intro_morning": [
@@ -71,104 +63,82 @@ PERSONA_TONES = {
     },
 }
 
-# ---------------------------------------------------------------------------
-# Paths for JSON memory/personality + portraits/outfits
-# ---------------------------------------------------------------------------
+# ---------------- Per-sibling reply tempo (seconds) ----------------
+# FAST = feels live (1-8s); MED = chatty (15-60s); SLOW = casual (2-6 min)
+TEMPO = {
+    "Aria":   {"fast": (4, 12),  "med": (40, 120), "slow": (180, 360)},
+    "Selene": {"fast": (5, 15),  "med": (60, 150), "slow": (240, 420)},
+    "Cassandra": {"fast": (2, 8), "med": (30, 90), "slow": (180, 360)},
+    "Ivy":    {"fast": (1, 6),   "med": (25, 75),  "slow": (120, 300)},
+}
 
-PERSONALITY_DIR = "/Autonomy/personalities"
-MEMORY_DIR = "/Autonomy/memory"
-PORTRAIT_DIR = "/Autonomy/portraits"
-OUTFIT_DIR = "/Autonomy/outfits"
+def _tempo_range(name: str, band: str) -> tuple[int, int]:
+    lo, hi = TEMPO.get(name, TEMPO["Aria"]).get(band, (30, 90))
+    return lo, hi
 
-def _personality_path(name: str) -> str:
-    return os.path.join(PERSONALITY_DIR, f"{name}.json")
+# ---------------- Paths for optional JSONs ----------------
+def _profile_path(name: str) -> str: return f"/Autonomy/personalities/{name}.json"
+def _memory_path(name: str)  -> str: return f"/Autonomy/memory/{name}.json"
 
-def _memory_path(name: str) -> str:
-    return os.path.join(MEMORY_DIR, f"{name}.json")
-
-def _portrait_path(name: str) -> str:
-    # Sisters use single portrait file: {Name}_Portrait.png
-    return os.path.join(PORTRAIT_DIR, f"{name}_Portrait.png")
-
-def _outfit_path_for(name: str, dt: datetime) -> str:
-    day = dt.astimezone(AEDT).date().isoformat()
-    outdir = os.path.join(OUTFIT_DIR, name)
-    os.makedirs(outdir, exist_ok=True)
-    return os.path.join(outdir, f"{day}_outfit.png")
-
-# ---------------------------------------------------------------------------
-# JSON helpers
-# ---------------------------------------------------------------------------
-
-def _read_json(path: str, default: dict) -> dict:
+def _load_json(path: str, default: dict) -> dict:
     try:
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
     except Exception as e:
-        log_event(f"[WARN] JSON read fail {path}: {e}")
+        log_event(f"[WARN] JSON read failed {path}: {e}")
     return default
 
-def _write_json(path: str, payload: dict):
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        log_event(f"[WARN] JSON write fail {path}: {e}")
-
 def load_persona(name: str) -> dict:
-    return _read_json(_personality_path(name), {
-        "name": name,
-        "likes": [],
-        "dislikes": [],
-        "speech_examples": [],
-        "core_personality": ""
-    })
+    data = _load_json(_profile_path(name), {"name": name, "likes": [], "dislikes": [], "core_personality": ""})
+    data.setdefault("likes", []); data.setdefault("dislikes", []); data.setdefault("core_personality", "")
+    return data
 
 def load_memory(name: str) -> dict:
-    return _read_json(_memory_path(name), {
+    data = _load_json(_memory_path(name), {
         "projects": {},
         "recent_notes": [],
-        "last_outfit_prompt": None
+        "outfits": {"date": None, "count": 0}
     })
+    data.setdefault("projects", {}); data.setdefault("recent_notes", [])
+    data.setdefault("outfits", {"date": None, "count": 0})
+    return data
 
 def save_memory(name: str, memo: dict):
-    _write_json(_memory_path(name), memo)
+    try:
+        os.makedirs("/Autonomy/memory", exist_ok=True)
+        with open(_memory_path(name), "w", encoding="utf-8") as f:
+            json.dump(memo, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log_event(f"[WARN] Memory write failed for {name}: {e}")
 
-# ---------------------------------------------------------------------------
-# Rotation / awake scheduling (AEDT)
-# ---------------------------------------------------------------------------
-
+# ---------------- Schedule helpers ----------------
 def _assign_today_schedule(name: str, state: dict, config: dict):
-    key, kdate = f"{name}_schedule", f"{name}_schedule_date"
+    key, kd = f"{name}_schedule", f"{name}_schedule_date"
     today = datetime.now(AEDT).date()
-    if state.get(kdate) == today and key in state:
-        return state[key]
+    if state.get(kd) == today and key in state: return state[key]
+
     sch = (config.get("schedules", {}) or {}).get(name, {"wake": [6, 8], "sleep": [22, 23]})
     def pick(span): lo, hi = int(span[0]), int(span[1]); return random.randint(lo, hi) if hi >= lo else lo
-    state[key] = {"wake": pick(sch.get("wake", [6,8])), "sleep": pick(sch.get("sleep", [22,23]))}
-    state[kdate] = today
-    return state[key]
+    schedule = {"wake": pick(sch.get("wake", [6, 8])), "sleep": pick(sch.get("sleep", [22, 23]))}
+    state[key] = schedule; state[kd] = today; return schedule
 
-def _hour_in_range(now_h: int, wake: int, sleep: int) -> bool:
+def is_awake(sis_info, lead_name, state=None, config=None):
+    if sis_info["name"] == lead_name: return True
+    sc = _assign_today_schedule(sis_info["name"], state or {}, config or {"schedules": {}})
+    now_h = datetime.now(AEDT).hour
+    wake, sleep = sc["wake"], sc["sleep"]
     if wake == sleep: return True
-    if wake < sleep: return wake <= now_h < sleep
+    if wake < sleep:  return wake <= now_h < sleep
     return now_h >= wake or now_h < sleep
 
-def is_awake(sister_info, lead_name, state=None, config=None):
-    if sister_info["name"] == lead_name:
-        return True
-    sc = _assign_today_schedule(sister_info["name"], state or {}, config or {})
-    now_h = datetime.now(AEDT).hour
-    return _hour_in_range(now_h, sc["wake"], sc["sleep"])
-
+# ---------------- Rotation & theme ----------------
 def get_today_rotation(state, config):
     idx = state.get("rotation_index", 0) % len(config["rotation"])
     names = [s["name"] for s in config["rotation"]]
     lead = names[idx]
     rest = names[(idx + 1) % len(names)]
-    supports = [n for n in names if n not in [lead, rest]]
+    supports = [n for n in names if n not in (lead, rest)]
     return {"lead": lead, "rest": rest, "supports": supports}
 
 def advance_rotation(state, config):
@@ -190,35 +160,26 @@ async def post_to_family(message: str, sender, sisters, config):
                     await ch.send(message)
                     log_event(f"{sender} posted: {message}")
             except Exception as e:
-                log_event(f"[ERROR] {sender} send failed: {e}")
+                log_event(f"[ERROR] Send fail {sender}: {e}")
             break
 
-# ---------------------------------------------------------------------------
-# Media / memory context (kept small and real-feeling)
-# ---------------------------------------------------------------------------
-
+# ---------------- Shared context (memories, projects) ----------------
 REAL_MEDIA = {
     "games": [
         "The Legend of Zelda: Tears of the Kingdom", "Final Fantasy XIV", "Hades",
-        "Stardew Valley", "Hollow Knight", "Elden Ring", "Overwatch 2"
+        "Stardew Valley", "Elden Ring", "Hollow Knight", "Overwatch 2"
     ],
-    "anime": [
-        "Attack on Titan", "Demon Slayer", "Jujutsu Kaisen", "My Hero Academia", "Spy x Family"
-    ],
-    "music": [
-        "lofi hip hop", "indie pop playlists", "Ghibli soundtracks", "synthwave",
-    ],
-    "shows": [
-        "The Mandalorian", "Arcane", "The Last of Us", "Stranger Things"
-    ]
+    "anime": ["Attack on Titan", "Demon Slayer", "Jujutsu Kaisen", "My Hero Academia", "Spy x Family"],
+    "music": ["lofi hip hop", "indie pop", "Ghibli soundtracks", "synthwave"],
+    "shows": ["The Mandalorian", "Arcane", "The Last of Us", "Stranger Things"],
 }
 
 def _ensure_shared_context(state: dict):
     sc = state.setdefault("shared_context", {})
     sc.setdefault("memories", [])
-    sc.setdefault("projects", {})        # {name: dict}
+    sc.setdefault("projects", {})
+    sc.setdefault("convo_threads", {})  # {channel_id: {"turns":int,"last":name}}
     sc.setdefault("last_spontaneous_ts", None)
-    sc.setdefault("convo_threads", {})  # {channel_id: {last_author, turns}}
     return sc
 
 def _record_memory(state: dict, text: str):
@@ -227,392 +188,221 @@ def _record_memory(state: dict, text: str):
 
 def _maybe_seed_project(state: dict, name: str):
     sc = _ensure_shared_context(state)
-    if name not in sc["projects"]:
-        seeds = {
-            "Aria": {"title": "Weekly planner revamp", "progress": round(random.uniform(0.2, 0.6), 2), "note": "color tabs and layouts"},
-            "Selene": {"title": "Comfort-food recipe cards", "progress": round(random.uniform(0.3, 0.7), 2), "note": "handwritten set"},
-            "Cassandra": {"title": "Shelf re-organization", "progress": round(random.uniform(0.5, 0.9), 2), "note": "labeling lower drawers"},
-            "Ivy": {"title": "Closet restyle challenge", "progress": round(random.uniform(0.1, 0.5), 2), "note": "mismatch fits on purpose"},
-        }
-        sc["projects"][name] = seeds.get(name, {"title": "Personal task", "progress": 0.3, "note": "initial setup"})
+    if name in sc["projects"]: return
+    seeds = {
+        "Aria": {"title": "Weekly planner revamp", "progress": round(random.uniform(0.2, 0.6), 2), "note": "color tabs and layouts"},
+        "Selene": {"title": "Comfort-food recipe cards", "progress": round(random.uniform(0.3, 0.7), 2), "note": "handwritten set"},
+        "Cassandra": {"title": "Shelf re-organization", "progress": round(random.uniform(0.5, 0.9), 2), "note": "labeling lower drawers"},
+        "Ivy": {"title": "Closet restyle challenge", "progress": round(random.uniform(0.1, 0.5), 2), "note": "chaos fits on purpose"},
+    }
+    sc["projects"][name] = seeds.get(name, {"title": "Small personal task", "progress": 0.3, "note": "low-key"})
 
-def _update_project(state: dict, name: str, small_step=True):
-    sc = _ensure_shared_context(state)
-    _maybe_seed_project(state, name)
-    pj = sc["projects"].get(name)
-    if not pj: return
-    delta = random.uniform(0.02, 0.08) if small_step else random.uniform(0.08, 0.18)
-    pj["progress"] = float(max(0.0, min(1.0, round(pj["progress"] + delta, 2))))
-
-def _media_from_text(text: str) -> list:
-    hits, lower = [], text.lower()
-    for items in REAL_MEDIA.values():
-        for it in items:
-            if it.lower() in lower:
+def _media_from_text(text: str) -> list[str]:
+    hits, low = [], text.lower()
+    for cat in REAL_MEDIA.values():
+        for it in cat:
+            if it.lower() in low:
                 hits.append(it)
     return list(set(hits))
 
-def _media_reaction_weight(name: str, text: str, config: dict) -> float:
-    persona = load_persona(name)
-    likes = " ".join(persona.get("likes", [])).lower()
-    dislikes = " ".join(persona.get("dislikes", [])).lower()
-    boost = 0.0
+def _media_bias(name: str, text: str) -> float:
+    p = load_persona(name)
+    likes = " ".join(p.get("likes", [])).lower()
+    dislikes = " ".join(p.get("dislikes", [])).lower()
+    bias = 0.0
     for m in _media_from_text(text):
-        if any(w in likes for w in m.lower().split()):
-            boost += 0.25
-        if any(w in dislikes for w in m.lower().split()):
-            boost -= 0.20
-    return boost
+        if any(w in likes for w in m.lower().split()): bias += 0.25
+        if any(w in dislikes for w in m.lower().split()): bias -= 0.2
+    return bias
 
-# ---------------------------------------------------------------------------
-# Persona wrapper (anti “Aria keeps talking about books” bias)
-# ---------------------------------------------------------------------------
-
+# ---------------- Persona wrapper (sibling vibe) ----------------
 async def _persona_reply(
-    sname: str,
-    role: str,
-    base_prompt: str,
-    theme: str,
-    history: list,
-    config: dict,
-    mode: str = "default",
-    address_to: str | None = None,
-    inject_media: str | None = None,
-    project_hint: bool = False,
+    sname: str, role: str, base_prompt: str, theme: str, config: dict,
+    mode: str = "default", address_to: str | None = None, avoid_books_if_aria: bool = True,
+    inject_media: str | None = None, project_hint: bool = False
 ):
     sister_cfg = next((s for s in config["rotation"] if s["name"] == sname), {})
     personality = sister_cfg.get("personality", "Neutral personality.")
     allow_swear = sister_cfg.get("swearing_allowed", False)
 
     mode_map = {
-        "support": "encouraging, warm, a little teasing if natural",
-        "tease": "poke fun, playful/bratty sibling energy (kind underneath)",
-        "challenge": "blunt or scolding like a strict sibling (not cruel)",
-        "story": "share a tiny, realistic anecdote or throwback memory",
-        "default": "casual sibling banter; quick, natural",
+        "support": "encouraging, warm, a little teasing",
+        "tease": "poke fun, bratty but affectionate",
+        "challenge": "blunt, strict sibling tone (not cruel)",
+        "story": "tiny anecdote or real-feeling moment",
+        "default": "casual sibling banter",
     }
 
     anti_book = ""
-    if sname == "Aria":
-        anti_book = "Avoid leaning on books unless it truly fits; prefer present-moment, practical observations."
+    if avoid_books_if_aria and sname == "Aria":
+        anti_book = "Avoid defaulting to books; prefer present, practical observations."
 
-    addressing = f"Address {address_to} directly if it feels natural. " if address_to else ""
-    media_clause = f"If it fits, reference {inject_media} naturally. " if inject_media else ""
-    proj_clause = "Optionally mention a real-feeling micro-update on your personal project. " if project_hint else ""
+    addr = f"If natural, address {address_to} directly. " if address_to else ""
+    media = f"If it fits, mention {inject_media}. " if inject_media else ""
+    project = "Optionally add a tiny, specific update on your own project. " if project_hint else ""
 
     prompt = (
         f"You are {sname}. Personality: {personality}. "
-        f"Tone role: {role}. Style mode: {mode_map.get(mode, 'casual sibling banter')}. "
-        f"{'Mild swearing is okay if natural.' if allow_swear else 'Do not swear.'} "
-        f"Talk like siblings (banter, small teasing, warm/familiar). "
-        f"{anti_book} {addressing}{media_clause}{proj_clause}{base_prompt}"
+        f"Role tone: {role}. Style mode: {mode_map.get(mode,'casual sibling banter')}. "
+        f"{'Mild swearing allowed if natural.' if allow_swear else 'Do not swear.'} "
+        f"Talk like siblings, not a support group. {anti_book} {addr}{media}{project}{base_prompt}"
     )
 
     return await generate_llm_reply(
-        sister=sname,
-        user_message=prompt,
-        theme=theme,
-        role=role,
-        history=history,
+        sister=sname, user_message=prompt, theme=theme, role=role, history=[],
     )
 
-# ---------------------------------------------------------------------------
-# Outfit generation (portrait-based). Safe fallback if backend unavailable.
-# ---------------------------------------------------------------------------
-
-async def generate_and_post_outfit(name: str, sisters, config, prompt_hint: str | None = None):
-    """
-    Creates a day outfit image from the sibling's base portrait and posts it.
-    - Portrait: /Autonomy/portraits/{Name}_Portrait.png
-    - Save to:  /Autonomy/outfits/{Name}/YYYY-MM-DD_outfit.png
-    - Stores 'last_outfit_prompt' in memory JSON.
-    """
-    base_path = _portrait_path(name)
-    save_path = _outfit_path_for(name, datetime.now(AEDT))
-    mem = load_memory(name)
-
-    # Basic personality-informed defaults
-    persona = load_persona(name)
-    season = _season_descriptor()
-    style_line = _style_line_for(name, persona)
-
-    # Prompt to the image system
-    outfit_prompt = (
-        prompt_hint
-        or f"{name}'s outfit today ({season}): {style_line}. Full-body outfit render, consistent with portrait."
-    )
-
-    mem["last_outfit_prompt"] = outfit_prompt
-    save_memory(name, mem)
-
-    if image_utils and hasattr(image_utils, "generate_from_portrait") and os.path.exists(base_path):
-        try:
-            out = image_utils.generate_from_portrait(
-                base_portrait_path=base_path,
-                outfit_prompt=outfit_prompt,
-                save_path=save_path
-            )
-            if out:
-                await post_to_family(f"🧵 {name} — today’s fit:", name, sisters, config)
-                await _post_image_file(name, sisters, config, out)
-                log_event(f"[OUTFIT] {name} generated: {out}")
-                return out
-        except Exception as e:
-            log_event(f"[ERROR] Outfit gen failed for {name}: {e}")
-
-    # Fallback (no backend)
-    await post_to_family(f"🧵 {name} — today’s fit: {style_line} ({season})", name, sisters, config)
-    log_event(f"[OUTFIT-FALLBACK] {name}: {style_line}")
-    return None
-
-async def _post_image_file(sender: str, sisters, config, path: str):
-    # Discord file post via correct bot instance
-    for bot in sisters:
-        if bot.sister_info["name"] == sender and bot.is_ready():
-            try:
-                ch = bot.get_channel(config["family_group_channel"])
-                if ch and os.path.exists(path):
-                    import discord
-                    file = discord.File(path, filename=os.path.basename(path))
-                    await ch.send(file=file)
-            except Exception as e:
-                log_event(f"[ERROR] image send failed for {sender}: {e}")
-            break
-
-def _season_descriptor() -> str:
-    dt = datetime.now(AEDT)
-    m = dt.month
-    # Southern hemisphere seasons
-    if m in (12,1,2): return "summer"
-    if m in (3,4,5): return "autumn"
-    if m in (6,7,8): return "winter"
-    return "spring"
-
-def _style_line_for(name: str, persona: dict) -> str:
-    # Small, personality-aligned defaults
-    base = {
-        "Aria": "soft knit top, pleated skirt, tidy layers, muted palette",
-        "Selene": "cozy cardigan, relaxed slacks or long skirt, gentle colors",
-        "Cassandra": "structured top, fitted pants, clean lines, minimal palette",
-        "Ivy": "playful crop or oversized top, statement skirt/shorts, mischievous accessories",
-    }
-    return base.get(name, "casual, personality-aligned fit")
-
-# ---------------------------------------------------------------------------
-# Rituals (morning/night) — generate outfits in morning; siblings reply naturally
-# ---------------------------------------------------------------------------
-
+# ---------------- Rituals (AEDT) ----------------
 async def send_morning_message(state, config, sisters):
-    rotation = get_today_rotation(state, config)
-    theme = get_current_theme(state, config)
-    lead = rotation["lead"]
-
+    rot = get_today_rotation(state, config)
+    theme, lead = get_current_theme(state, config), rot["lead"]
     _maybe_seed_project(state, lead)
-    _update_project(state, lead, small_step=True)
 
     opener = random.choice(PERSONA_TONES.get(lead, {}).get("intro_morning", ["Morning."]))
     try:
-        lead_msg = await _persona_reply(
+        msg = await _persona_reply(
             lead, "lead",
-            f'Expand into 3–5 sentences as a brisk siblingy morning greeting. Start from: "{opener}"',
-            theme, [], config, mode="story", project_hint=True
+            f'Expand into 3–5 sentences as a brisk, sibling-y morning greeting. Start from: "{opener}"',
+            theme, config, mode="story", project_hint=True
         )
     except Exception:
-        lead_msg = opener
+        msg = opener
 
-    workout_block = get_today_workout()
-    if workout_block:
-        lead_msg += f"\n\n🏋️ Today’s workout: {workout_block}"
+    wb = get_today_workout()
+    if wb: msg += f"\n\n🏋️ Today’s workout: {wb}"
 
-    await post_to_family(lead_msg, sender=lead, sisters=sisters, config=config)
-    append_ritual_log(lead, "lead", theme, lead_msg)
-
-    # Generate & post today's outfit for lead
-    await generate_and_post_outfit(lead, sisters, config)
-
-    # Everyone else has a chance to post their outfit in the morning too
-    for bot in sisters:
-        sname = bot.sister_info["name"]
-        if sname == lead: continue
-        if is_awake(bot.sister_info, lead, state, config) and random.random() < 0.65:
-            await asyncio.sleep(random.randint(2, 10))
-            await generate_and_post_outfit(sname, sisters, config)
-
+    await post_to_family(msg, lead, sisters, config)
+    append_ritual_log(lead, "lead", theme, msg)
+    _record_memory(state, f"{lead} morning vibe: {opener}")
     advance_rotation(state, config)
 
 async def send_night_message(state, config, sisters):
-    rotation = get_today_rotation(state, config)
-    theme = get_current_theme(state, config)
-    lead = rotation["lead"]
-
-    _maybe_seed_project(state, lead)
-    _update_project(state, lead, small_step=True)
-
+    rot = get_today_rotation(state, config)
+    theme, lead = get_current_theme(state, config), rot["lead"]
     opener = random.choice(PERSONA_TONES.get(lead, {}).get("intro_night", ["Night."]))
     try:
-        lead_msg = await _persona_reply(
+        msg = await _persona_reply(
             lead, "lead",
             f'Expand into 3–5 sentences as a relaxed sibling reflection. Start from: "{opener}"',
-            theme, [], config, mode="story", project_hint=True
+            theme, config, mode="story", project_hint=True
         )
     except Exception:
-        lead_msg = opener
+        msg = opener
+    tw = get_today_workout(datetime.now(AEDT).date() + timedelta(days=1))
+    if tw: msg += f"\n\n🌙 Tomorrow’s workout: {tw}"
+    await post_to_family(msg, lead, sisters, config)
+    append_ritual_log(lead, "lead", theme, msg)
 
-    tomorrow = datetime.now(AEDT).date() + timedelta(days=1)
-    tomorrow_block = get_today_workout(tomorrow)
-    if tomorrow_block:
-        lead_msg += f"\n\n🌙 Tomorrow’s workout: {tomorrow_block}"
+# ---------------- Outfit posting (cap at 2/day) ----------------
+async def maybe_post_outfit(name: str, state: dict, config: dict, sisters, text: str):
+    mem = load_memory(name)
+    today = datetime.now(AEDT).date().isoformat()
+    if mem["outfits"]["date"] != today:
+        mem["outfits"] = {"date": today, "count": 0}
+    if mem["outfits"]["count"] >= 2:
+        return  # daily cap reached
+    await post_to_family(text, name, sisters, config)
+    mem["outfits"]["count"] += 1
+    save_memory(name, mem)
 
-    await post_to_family(lead_msg, sender=lead, sisters=sisters, config=config)
-    append_ritual_log(lead, "lead", theme, lead_msg)
-
-# ---------------------------------------------------------------------------
-# Spontaneous chat (not exactly hourly) + midday outfit changes
-# ---------------------------------------------------------------------------
-
+# ---------------- Spontaneous chat (non-hourly, uses tempo) ----------------
 async def send_spontaneous_task(state, config, sisters):
     sc = _ensure_shared_context(state)
     now = datetime.now(AEDT)
-    last_ts = sc.get("last_spontaneous_ts")
-    if last_ts:
-        mins = (now - last_ts).total_seconds() / 60.0
-        min_gap = random.randint(42, 95)
-        if mins < min_gap:
-            return
-
-    rotation = get_today_rotation(state, config)
-    theme = get_current_theme(state, config)
-    lead = rotation["lead"]
-
-    awake = [b.sister_info["name"] for b in sisters if is_awake(b.sister_info, lead, state, config)]
-    if not awake:
+    last = sc.get("last_spontaneous_ts")
+    if last and (now - last).total_seconds() < random.randint(42*60, 95*60):
         return
 
-    last_speaker = state.get("last_spontaneous_speaker")
-    weights = [(0.35 if n == last_speaker else 1.0) for n in awake]
-    speaker = random.choices(awake, weights=weights, k=1)[0]
+    rot, theme = get_today_rotation(state, config), get_current_theme(state, config)
+    lead = rot["lead"]
+    awake = [b.sister_info["name"] for b in sisters if is_awake(b.sister_info, lead, state, config)]
+    if not awake: return
 
+    last_sis = state.get("last_spontaneous_speaker")
+    weights = [(0.35 if n == last_sis else 1.0) for n in awake]
+    speaker = random.choices(awake, weights=weights, k=1)[0]
     targets = [n for n in awake if n != speaker]
     address_to = random.choice(targets) if targets else None
+    media = random.choice(sum(REAL_MEDIA.values(), [])) if random.random() < 0.35 else None
 
-    # 35% chance the spontaneous event is an outfit change instead of a chat line
-    if random.random() < 0.35:
-        await generate_and_post_outfit(speaker, sisters, config, prompt_hint=None)
-        sc["last_spontaneous_ts"] = now
-        state["last_spontaneous_speaker"] = speaker
-        return
-
-    mode_bias = {
+    mode_pick = {
         "Aria": ["story","support","default"],
         "Selene": ["support","story","default"],
         "Cassandra": ["challenge","tease","default"],
-        "Ivy": ["tease","support","default"],
+        "Ivy": ["tease","support","default"]
     }
-    mode = random.choice(mode_bias.get(speaker, ["default"]))
+    mode = random.choice(mode_pick.get(speaker, ["default"]))
 
-    base = "Say something quick to start a siblingy mini-convo. Tease/play nice as fits."
+    base = "Say something quick to spark conversation with a sibling. Keep it casual and real."
+    if media: base += f" If it fits, mention {media}."
+
     try:
         msg = await _persona_reply(
-            speaker, "support",
-            base, theme, [], config,
-            mode=mode, address_to=address_to,
-            project_hint=(random.random() < 0.4)
+            speaker, "support", base, theme, config,
+            mode=mode, address_to=address_to, project_hint=random.random()<0.4
         )
     except Exception as e:
-        log_event(f"[ERROR] spontaneous gen {speaker}: {e}")
+        log_event(f"[ERROR] Spontaneous gen {speaker}: {e}")
         return
 
     if msg:
-        await post_to_family(msg, sender=speaker, sisters=sisters, config=config)
-        log_event(f"[SPONTANEOUS] {speaker}: {msg}")
-        sc["last_spontaneous_ts"] = now
+        await post_to_family(msg, speaker, sisters, config)
         state["last_spontaneous_speaker"] = speaker
+        sc["last_spontaneous_ts"] = now
 
-# ---------------------------------------------------------------------------
-# Interactions — sibling back-and-forth with natural end
-# ---------------------------------------------------------------------------
-
+# ---------------- Message interaction with back-and-forth ----------------
 async def handle_sister_message(state, config, sisters, author, content, channel_id):
-    rotation = get_today_rotation(state, config)
-    theme = get_current_theme(state, config)
-    lead = rotation["lead"]
+    rot, theme = get_today_rotation(state, config), get_current_theme(state, config)
+    lead = rot["lead"]
     sc = _ensure_shared_context(state)
-
-    thread = sc["convo_threads"].setdefault(channel_id, {"last_author": None, "turns": 0})
-
-    # Light memory crumb
-    if random.random() < 0.2:
-        _record_memory(state, f"{author} said: {content[:120]}")
+    thread = sc["convo_threads"].setdefault(channel_id, {"turns": 0, "last": None})
 
     for bot in sisters:
-        sname = bot.sister_info["name"]
-        if sname == author:
-            continue
-        if not is_awake(bot.sister_info, lead, state, config):
+        name = bot.sister_info["name"]
+        if name == author or not is_awake(bot.sister_info, lead, state, config):
             continue
 
         lower = content.lower()
-        force = (sname.lower() in lower) or ("everyone" in lower)
+        force = (name.lower() in lower) or ("everyone" in lower)
 
-        chance = 0.22
-        if sname == lead:
-            chance = 0.75
-        elif sname in rotation["supports"]:
-            chance = 0.45
-        elif sname == rotation["rest"]:
-            chance = 0.18
-
-        chance += _media_reaction_weight(sname, content, config)
-
-        if force:
-            chance = 1.0
-
-        if thread["turns"] > 0 and thread["last_author"] != sname:
-            chance += 0.10
+        chance = 0.20
+        if name == lead: chance = 0.75
+        elif name in rot["supports"]: chance = 0.45
+        elif name == rot["rest"]: chance = 0.15
+        chance += _media_bias(name, content)
+        if force: chance = 1.0
+        if thread["turns"] > 0 and thread["last"] != name: chance += 0.10
 
         if random.random() < max(0.05, min(1.0, chance)):
             mode = random.choice(["tease","support","challenge","default","story"])
-            inject = None
-            mf = _media_from_text(content)
-            if mf and random.random() < 0.6:
-                inject = random.choice(mf)
-
-            try:
-                reply = await _persona_reply(
-                    sname, "support",
-                    f'Reply to {author} who said: "{content}". Keep it short (1–2 sentences) and sibling-like.',
-                    theme, [], config,
-                    mode=mode, address_to=author, inject_media=inject,
-                    project_hint=(random.random() < 0.25)
-                )
-            except Exception as e:
-                log_event(f"[ERROR] reply fail {sname}: {e}")
-                continue
-
+            reply = await _persona_reply(
+                name, "support",
+                f'Reply to {author} who said: "{content}". Keep it short (1–2 sentences) and sibling-like.',
+                theme, config, mode=mode, address_to=author,
+            )
             if reply:
-                await post_to_family(reply, sender=sname, sisters=sisters, config=config)
-                log_event(f"[CHAT] {sname} → {author}: {reply}")
-                thread["last_author"] = sname
-                thread["turns"] = min(4, thread["turns"] + 1)
+                # pace per sibling: if they feel like quick hits, use fast; sometimes med/slow
+                band = random.choices(["fast","med","slow"], weights=[0.5,0.35,0.15])[0]
+                wait_lo, wait_hi = _tempo_range(name, band)
+                await asyncio.sleep(random.randint(wait_lo, wait_hi))
+                await post_to_family(reply, name, sisters, config)
+                thread["turns"] = min(5, thread["turns"] + 1)
+                thread["last"] = name
 
-                # One more natural turn from the original author with small chance
-                if thread["turns"] < 4 and random.random() < 0.35:
-                    await asyncio.sleep(random.randint(3, 9))
-                    try:
-                        follow = await _persona_reply(
-                            author, "support",
-                            f"Continue a tiny back-and-forth with {sname}. If it feels done, wrap naturally.",
-                            theme, [], config,
-                            mode=random.choice(["tease","support","default"]),
-                            address_to=sname
-                        )
-                        if follow:
-                            await post_to_family(follow, sender=author, sisters=sisters, config=config)
-                            log_event(f"[CHAT] {author} → {sname}: {follow}")
-                            thread["last_author"] = author
-                            thread["turns"] += 1
-                    except Exception as e:
-                        log_event(f"[ERROR] follow fail: {e}")
+                # give author a chance to respond one more time (and end naturally)
+                if thread["turns"] < 5 and random.random() < 0.4:
+                    a_band = random.choices(["fast","med","slow"], weights=[0.6,0.3,0.1])[0]
+                    a_lo, a_hi = _tempo_range(author, a_band)
+                    await asyncio.sleep(random.randint(a_lo, a_hi))
+                    follow = await _persona_reply(
+                        author, "support",
+                        f"Continue the quick back-and-forth with {name}. One short line, end naturally if it feels done.",
+                        theme, config, mode=random.choice(["tease","support","default"]), address_to=name
+                    )
+                    if follow:
+                        await post_to_family(follow, author, sisters, config)
+                        thread["turns"] += 1
+                        thread["last"] = author
 
     if thread["turns"] >= 3 and random.random() < 0.5:
-        sc["convo_threads"][channel_id] = {"last_author": None, "turns": 0}
+        sc["convo_threads"][channel_id] = {"turns": 0, "last": None}
