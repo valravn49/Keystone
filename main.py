@@ -1,31 +1,40 @@
+# main.py — Unified AEDT-aware family system with natural sibling chatter and outfit updates
+
 import os
 import json
 import asyncio
-import random
 import datetime
-from zoneinfo import ZoneInfo
-
+import random
 import discord
 from discord.ext import commands, tasks
 from fastapi import FastAPI
+from zoneinfo import ZoneInfo
 
 import sisters_behavior
 from sisters_behavior import (
     send_morning_message,
     send_night_message,
     send_spontaneous_task,
-    handle_sister_message,
-    generate_and_post_outfit,
-    get_today_rotation,
+    maybe_post_outfit,
 )
-
-import will_behavior
-from will_behavior import ensure_will_systems, will_handle_message, will_generate_and_post_outfit
+from aria_commands import setup_aria_commands
 from logger import log_event
 
+# ✅ Will integration
+import will_behavior
+from will_behavior import ensure_will_systems, will_handle_message
+
+# ✅ Self-update integration
+from self_update import queue_update, apply_updates_if_sleeping, generate_organic_updates
+
+# ---------------------------------------------------------------------------
+# AEDT setup (auto handles daylight savings)
+# ---------------------------------------------------------------------------
 AEDT = ZoneInfo("Australia/Sydney")
 
-# ---------------- Load Config ----------------
+# ---------------------------------------------------------------------------
+# Load Config
+# ---------------------------------------------------------------------------
 with open("config.json", "r", encoding="utf-8") as f:
     config = json.load(f)
 
@@ -33,24 +42,36 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
 
-# Shared state
+# Shared runtime state
 state = {
     "rotation_index": 0,
     "theme_index": 0,
     "last_theme_update": None,
     "history": {},
-    "shared_context": {},
+    "spontaneous_end_tasks": {},
+    "last_spontaneous_task": None,
 }
 
-# ---------------- Discord Setup ----------------
+# ---------------------------------------------------------------------------
+# Discord Bot Classes
+# ---------------------------------------------------------------------------
 class SisterBot(commands.Bot):
     def __init__(self, sister_info):
         super().__init__(command_prefix="!", intents=intents)
         self.sister_info = sister_info
 
     async def setup_hook(self):
-        # If you have slash-commands for Aria etc, wire them here
-        pass
+        if self.sister_info["name"] == "Aria":
+            setup_aria_commands(
+                self.tree,
+                state,
+                lambda: sisters_behavior.get_today_rotation(state, config),
+                lambda: sisters_behavior.get_current_theme(state, config),
+                lambda: send_morning_message(state, config, sisters),
+                lambda: send_night_message(state, config, sisters),
+            )
+            await self.tree.sync()
+
 
 class WillBot(commands.Bot):
     def __init__(self, will_info):
@@ -60,70 +81,94 @@ class WillBot(commands.Bot):
     async def setup_hook(self):
         pass
 
-# Create bot instances
+
+# ---------------------------------------------------------------------------
+# Create bots
+# ---------------------------------------------------------------------------
 sisters = [SisterBot(s) for s in config["rotation"]]
 will_info = {"name": "Will", "env_var": "WILL_TOKEN"}
 will_bot = WillBot(will_info)
 
-# ---------------- Events ----------------
+# ---------------------------------------------------------------------------
+# Events
+# ---------------------------------------------------------------------------
 @sisters[0].event
 async def on_ready():
-    log_event("[SYSTEM] Siblings waking (AEDT)…")
+    log_event("[SYSTEM] All sisters are waking up...")
     for bot in sisters:
         if bot.user:
             log_event(f"{bot.sister_info['name']} logged in as {bot.user}")
     if will_bot.user:
         log_event(f"{will_bot.sister_info['name']} logged in as {will_bot.user}")
 
+
 @sisters[0].event
 async def on_message(message):
     if message.author.bot:
         return
+
     channel_id = message.channel.id
     author = str(message.author)
     content = message.content
 
-    # Sisters handle
-    await handle_sister_message(state, config, sisters, author, content, channel_id)
-    # Will handle (pass list with just will_bot for posting)
+    # Sisters’ sibling chatter
+    await sisters_behavior.handle_sister_message(
+        state, config, sisters, author, content, channel_id
+    )
+    # Will’s message reactions
     await will_handle_message(state, config, [will_bot], author, content, channel_id)
 
-# ---------------- AEDT-aware times ----------------
-def aedt_time(h: int, m: int = 0) -> datetime.time:
-    return datetime.time(hour=h, minute=m, tzinfo=AEDT)
 
-# ---------------- Tasks ----------------
-@tasks.loop(time=aedt_time(6, 0))
+# ---------------------------------------------------------------------------
+# Tasks (AEDT-timed)
+# ---------------------------------------------------------------------------
+
+def aedt_time(hour: int, minute: int = 0):
+    """Return a datetime.time object anchored to AEDT timezone."""
+    return datetime.time(hour=hour, minute=minute, tzinfo=AEDT)
+
+@tasks.loop(time=aedt_time(6, 0))  # Morning ritual at 6:00 AEDT
 async def morning_task():
     await send_morning_message(state, config, sisters)
-    # Also Will generates outfit in the morning
-    await will_generate_and_post_outfit(state, [will_bot], config, bold_override=None)
 
-@tasks.loop(time=aedt_time(22, 0))
+@tasks.loop(time=aedt_time(22, 0))  # Night ritual at 22:00 AEDT
 async def night_task():
     await send_night_message(state, config, sisters)
 
-# Spontaneous talking + outfit changes happen here with jitter handled inside
-@tasks.loop(minutes=55)
+@tasks.loop(minutes=60)  # spontaneous sibling talk
 async def spontaneous_task():
-    # Each loop kicks a spontaneous check; inside, we add jitter gaps
     await send_spontaneous_task(state, config, sisters)
 
-# Optional: a midday extra chance to refresh an outfit (encourages “change”)
-@tasks.loop(time=aedt_time(13, 0))
-async def midday_outfit_ping():
-    # Randomly choose 1–2 siblings to “change” (small chance)
-    rot = get_today_rotation(state, config)
-    pickable = [s["name"] for s in config["rotation"]]
-    random.shuffle(pickable)
-    picks = pickable[:random.choice([1, 2])]
-    for name in picks:
-        await generate_and_post_outfit(name, sisters, config)
-    # Will sometimes too
-    if random.random() < 0.5:
-        await will_generate_and_post_outfit(state, [will_bot], config, bold_override=None)
+@tasks.loop(time=aedt_time(3, 0))  # nightly self-updates
+async def nightly_update_task():
+    organic_updates = generate_organic_updates(config, state)
+    bad_mood_chance = 0.15
 
-# ---------------- Loop guards ----------------
+    for sister in config["rotation"]:
+        name = sister["name"]
+        if name in organic_updates:
+            for upd in random.sample(organic_updates[name], k=random.randint(0, 2)):
+                queue_update(name, upd)
+
+        if random.random() < bad_mood_chance:
+            queue_update(
+                name,
+                {"behavior": "Bad mood today: shorter, snappier responses until night."},
+            )
+
+        profile_path = f"/Autonomy/personalities/{name}.json"
+        apply_updates_if_sleeping(name, state, config, profile_path)
+
+    # Will’s organic drift
+    queue_update(
+        "Will",
+        {"personality_shift": "Sometimes bursts outgoing, but retreats faster if flustered."},
+    )
+    apply_updates_if_sleeping("Will", state, config, "/Autonomy/personalities/Will.json")
+
+# ---------------------------------------------------------------------------
+# Loop setup
+# ---------------------------------------------------------------------------
 @morning_task.before_loop
 async def before_morning():
     await asyncio.sleep(5)
@@ -136,11 +181,13 @@ async def before_night():
 async def before_spontaneous():
     await asyncio.sleep(10)
 
-@midday_outfit_ping.before_loop
-async def before_midday():
-    await asyncio.sleep(7)
+@nightly_update_task.before_loop
+async def before_nightly():
+    await asyncio.sleep(20)
 
-# ---------------- Run ----------------
+# ---------------------------------------------------------------------------
+# Run All Bots + Tasks
+# ---------------------------------------------------------------------------
 async def run_all():
     for bot in sisters:
         asyncio.create_task(bot.start(os.getenv(bot.sister_info["env_var"])))
@@ -149,13 +196,15 @@ async def run_all():
     morning_task.start()
     night_task.start()
     spontaneous_task.start()
-    midday_outfit_ping.start()
+    nightly_update_task.start()
 
     ensure_will_systems(state, config, [will_bot])
 
-    log_event("[SYSTEM] Tasks started (AEDT).")
+    log_event("[SYSTEM] All tasks started and synced to AEDT timezone.")
 
-# ---------------- FastAPI ----------------
+# ---------------------------------------------------------------------------
+# FastAPI integration
+# ---------------------------------------------------------------------------
 app = FastAPI()
 
 @app.on_event("startup")
@@ -164,4 +213,4 @@ async def startup_event():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "tz": "Australia/Sydney"}
+    return {"status": "ok", "timezone": "AEDT", "time": datetime.datetime.now(AEDT).isoformat()}
