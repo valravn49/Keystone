@@ -10,7 +10,7 @@ intents.message_content = True
 intents.guilds = True
 
 
-class WillBot(commands.Bot):
+class will_bot(commands.Bot):
     def __init__(self, will_info):
         super().__init__(command_prefix="!", intents=intents)
         self.sister_info = will_info
