@@ -1,4 +1,5 @@
 import os
+import discord
 from discord.ext import commands
 
 # Recreate each sister’s Discord bot client
