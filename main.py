@@ -1,163 +1,138 @@
 import os
 import asyncio
-import random
-from datetime import datetime
-from zoneinfo import ZoneInfo
-
+import datetime
+import pytz
+import discord
+from discord.ext import tasks
 from fastapi import FastAPI
 
 from logger import log_event
+from autonomy_sisters import start_sisters
+from autonomy_will import start_will
 from sisters_behavior import (
     send_morning_message,
     send_night_message,
     send_spontaneous_task,
-    handle_sister_message,
-    generate_and_post_outfit,
+    get_today_rotation,
+    get_current_theme,
 )
-from will_behavior import ensure_will_systems, will_handle_message
+from will_behavior import ensure_will_systems
+from self_update import queue_update, apply_updates_if_sleeping, generate_organic_updates
+from image_utils import generate_daily_outfit_images
 
-# ---------------------------------------------------------------------------
-# Timezone
-# ---------------------------------------------------------------------------
-AEDT = ZoneInfo("Australia/Sydney")
+# ---------------------------------------------------------------------
+# 🕰 Timezone: Australian Eastern Daylight Time (AEDT)
+# ---------------------------------------------------------------------
+AEDT = pytz.timezone("Australia/Sydney")
 
-# ---------------------------------------------------------------------------
-# Scheduling constants
-# ---------------------------------------------------------------------------
-MORNING_HOUR_AEDT = 6
-NIGHT_HOUR_AEDT = 22
-SPONT_INTERVAL = 45 * 60  # 45 minutes
-LOOP_SLEEP_MIN = 120
-LOOP_SLEEP_MAX = 300
+def aedt_time(hour: int, minute: int = 0):
+    """Return a timezone-aware datetime.time object in AEDT."""
+    now = datetime.datetime.now(AEDT)
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return target.timetz()
 
-# ---------------------------------------------------------------------------
-# Helper
-# ---------------------------------------------------------------------------
-def now_aedt():
-    return datetime.now(AEDT)
+# ---------------------------------------------------------------------
+# 🧠 Shared global state
+# ---------------------------------------------------------------------
+state = {
+    "rotation_index": 0,
+    "theme_index": 0,
+    "last_theme_update": None,
+    "history": {},
+    "spontaneous_end_tasks": {},
+    "last_spontaneous_task": None,
+}
 
-# ---------------------------------------------------------------------------
-# Main family loop (background)
-# ---------------------------------------------------------------------------
-async def family_main_loop(state, config, sisters, will_bot):
-    log_event("[SYSTEM] Family loop started (AEDT synchronized).")
-    ensure_will_systems(state, config, [will_bot])
+# ---------------------------------------------------------------------
+# ☀️ Morning ritual — happens at 6:00 AM AEDT
+# ---------------------------------------------------------------------
+@tasks.loop(time=aedt_time(6, 0))
+async def morning_task():
+    log_event("[TASK] Morning ritual starting.")
+    from autonomy_sisters import sisters  # Lazy import for updated state
+    await send_morning_message(state, {}, sisters)
+    await generate_daily_outfit_images(state, sisters)
+    log_event("[TASK] Morning ritual complete.")
 
-    last_spontaneous = None
-    last_outfit_check = None
-    last_morning = None
-    last_night = None
+# ---------------------------------------------------------------------
+# 🌙 Night ritual — happens at 10:00 PM AEDT
+# ---------------------------------------------------------------------
+@tasks.loop(time=aedt_time(22, 0))
+async def night_task():
+    log_event("[TASK] Night ritual starting.")
+    from autonomy_sisters import sisters
+    await send_night_message(state, {}, sisters)
+    log_event("[TASK] Night ritual complete.")
 
-    while True:
-        now = now_aedt()
+# ---------------------------------------------------------------------
+# 💬 Spontaneous chatter — occurs with variable intervals
+# ---------------------------------------------------------------------
+@tasks.loop(minutes=55)
+async def spontaneous_task():
+    from autonomy_sisters import sisters
+    await send_spontaneous_task(state, {}, sisters)
 
-        # Morning ritual
-        if now.hour == MORNING_HOUR_AEDT and (not last_morning or last_morning.date() != now.date()):
-            try:
-                log_event("[RITUAL] Morning ritual running.")
-                await send_morning_message(state, config, sisters)
-                for entry in config.get("rotation", []):
-                    await generate_and_post_outfit(state, config, sisters, entry["name"])
-                last_morning = now
-            except Exception as e:
-                log_event(f"[ERROR] Morning ritual: {e}")
+# ---------------------------------------------------------------------
+# 🔧 Nightly update & personality drift — occurs at 3:00 AM AEDT
+# ---------------------------------------------------------------------
+@tasks.loop(time=aedt_time(3, 0))
+async def nightly_update_task():
+    from autonomy_sisters import sisters
+    organic_updates = generate_organic_updates({}, state)
+    bad_mood_chance = 0.15  # 15% chance per sibling
 
-        # Night ritual
-        if now.hour == NIGHT_HOUR_AEDT and (not last_night or last_night.date() != now.date()):
-            try:
-                log_event("[RITUAL] Night ritual running.")
-                await send_night_message(state, config, sisters)
-                last_night = now
-            except Exception as e:
-                log_event(f"[ERROR] Night ritual: {e}")
-
-        # Spontaneous chatter
-        if not last_spontaneous or (now - last_spontaneous).total_seconds() >= SPONT_INTERVAL:
-            if random.random() < 0.65:
-                try:
-                    await send_spontaneous_task(state, config, sisters)
-                except Exception as e:
-                    log_event(f"[ERROR] Spontaneous chat: {e}")
-            last_spontaneous = now
-
-        # Midday outfit refresh
-        if (not last_outfit_check or last_outfit_check.date() != now.date()) and now.hour >= 12:
-            try:
-                log_event("[OUTFIT] Midday outfit refresh.")
-                for entry in config.get("rotation", []):
-                    await generate_and_post_outfit(state, config, sisters, entry["name"])
-                last_outfit_check = now
-            except Exception as e:
-                log_event(f"[ERROR] Outfit refresh: {e}")
-
-        await asyncio.sleep(random.randint(LOOP_SLEEP_MIN, LOOP_SLEEP_MAX))
-
-# ---------------------------------------------------------------------------
-# Discord Message Relay
-# ---------------------------------------------------------------------------
-async def on_message(state, config, sisters, will_bot, author, content, channel_id):
-    if not author or not content:
-        return
-    try:
-        await handle_sister_message(state, config, sisters, author, content, channel_id)
-        await will_handle_message(state, config, [will_bot], author, content, channel_id)
-    except Exception as e:
-        log_event(f"[ERROR] on_message for {author}: {e}")
-
-# ---------------------------------------------------------------------------
-# Autonomy startup
-# ---------------------------------------------------------------------------
-async def start_autonomy_system(state, config, sisters, will_bot):
-    """Starts all bots and the family loop."""
-    log_event("[BOOT] Starting bots and autonomy system.")
-
-    # Start Discord bots
     for bot in sisters:
-        token = os.getenv(bot.sister_info["env_var"])
-        if token:
-            asyncio.create_task(bot.start(token))
-            log_event(f"[LOGIN] Starting {bot.sister_info['name']} bot.")
-        else:
-            log_event(f"[WARN] Missing token for {bot.sister_info['name']}")
+        name = bot.sister_info["name"]
+        if name in organic_updates:
+            for upd in organic_updates[name]:
+                queue_update(name, upd)
 
-    will_token = os.getenv(will_bot.sister_info["env_var"])
-    if will_token:
-        asyncio.create_task(will_bot.start(will_token))
-        log_event(f"[LOGIN] Starting Will bot.")
-    else:
-        log_event("[WARN] Missing Will bot token.")
+        if os.getenv(f"{name.upper()}_TOKEN"):
+            # Random bad mood insertion
+            if asyncio.get_event_loop().time() % 7 < 1.5 or bad_mood_chance > 0.1:
+                queue_update(name, {"behavior": f"{name} woke up in a bad mood today."})
+        apply_updates_if_sleeping(name, state, {}, f"/Autonomy/personalities/{name}_Personality.json")
 
-    # Start main background loop
-    asyncio.create_task(family_main_loop(state, config, sisters, will_bot))
-    log_event("[SYSTEM] All tasks scheduled.")
+    queue_update("Will", {"personality_shift": "Sometimes bursts of confidence, retreats when flustered."})
+    apply_updates_if_sleeping("Will", state, {}, "/Autonomy/personalities/Will_Personality.json")
 
-# ---------------------------------------------------------------------------
-# FastAPI app (ASGI entry)
-# ---------------------------------------------------------------------------
-app = FastAPI(title="Autonomy System", version="1.0.0")
+    log_event("[TASK] Nightly update completed.")
+
+# ---------------------------------------------------------------------
+# 🧩 Startup coordination
+# ---------------------------------------------------------------------
+@morning_task.before_loop
+@night_task.before_loop
+@spontaneous_task.before_loop
+@nightly_update_task.before_loop
+async def before_tasks():
+    await asyncio.sleep(5)
+
+# ---------------------------------------------------------------------
+# 🚀 FastAPI + Bot Startup
+# ---------------------------------------------------------------------
+app = FastAPI()
 
 @app.on_event("startup")
 async def startup_event():
-    """Starts the family system automatically when ASGI app starts."""
-    from autonomy_state import state
-    from autonomy_config import config
-    from autonomy_sisters import sisters
+    log_event("[SYSTEM] Initializing all systems (AEDT).")
+    # Launch all bots asynchronously
+    asyncio.create_task(start_sisters())
+    asyncio.create_task(start_will())
+    await asyncio.sleep(10)
+
+    # Start recurring tasks
+    morning_task.start()
+    night_task.start()
+    spontaneous_task.start()
+    nightly_update_task.start()
+
+    # Ensure Will’s background chatter system is active
     from autonomy_will import will_bot
+    ensure_will_systems(state, {}, [will_bot])
 
-    try:
-        await start_autonomy_system(state, config, sisters, will_bot)
-        log_event("[ASGI] Autonomy system running.")
-    except Exception as e:
-        log_event(f"[ERROR] Startup event failed: {e}")
-
-@app.get("/")
-async def root():
-    return {
-        "status": "running",
-        "timezone": "Australia/Sydney (AEDT)",
-        "message": "Autonomy system active",
-    }
+    log_event("[SYSTEM] All tasks started successfully (Autonomy Framework active).")
 
 @app.get("/health")
-async def health():
-    return {"ok": True, "time_aedt": now_aedt().isoformat()}
+async def health_check():
+    return {"status": "ok", "timezone": "Australia/Sydney (AEDT)"}
