@@ -1,9 +1,20 @@
 import os
+import json
 import asyncio
 import discord
 from discord.ext import commands
 from logger import log_event
-from config_loader import load_config
+
+# ---------------------------------------------------------------
+# Load configuration directly (no config_loader needed)
+# ---------------------------------------------------------------
+def load_config():
+    try:
+        with open("config.json", "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        log_event(f"[ERROR] Failed to load config.json: {e}")
+        return {}
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -11,7 +22,6 @@ intents.guilds = True
 intents.messages = True
 
 will_bot = None
-
 
 async def start_will():
     global will_bot
@@ -35,7 +45,7 @@ async def start_will():
         log_event(f"[ERROR] Failed to start Will: {e}")
 
 
-# Standalone debug mode
+# Optional standalone debug
 if __name__ == "__main__":
     async def _test():
         await start_will()
