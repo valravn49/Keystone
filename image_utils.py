@@ -1,13 +1,12 @@
 import os
 from datetime import datetime
-from image_gen import text2im  # Must be available (OpenAI or local model)
+from image_gen import text2im
 from logger import log_event
 
 # ------------------------------------------------------------
-# Helper: Seasonal Detection
+# Helper: Event and Season Detection
 # ------------------------------------------------------------
 def get_seasonal_event() -> str | None:
-    """Detect special seasonal events for outfit or group composite generation."""
     now = datetime.now()
     m, d = now.month, now.day
     if m == 10 and d == 31:
@@ -18,36 +17,61 @@ def get_seasonal_event() -> str | None:
         return "New Year"
     elif m == 2 and d == 14:
         return "Valentine’s Day"
-    elif m == 9:
-        return "Spring"
     return None
+
+def get_current_season() -> str:
+    """Returns season name (for southern hemisphere / Australia)."""
+    m = datetime.now().month
+    if m in (12, 1, 2):
+        return "Summer"
+    elif m in (3, 4, 5):
+        return "Autumn"
+    elif m in (6, 7, 8):
+        return "Winter"
+    else:
+        return "Spring"
+
+# ------------------------------------------------------------
+# Seasonal Fashion Adjustments
+# ------------------------------------------------------------
+def get_seasonal_style_description(season: str) -> str:
+    styles = {
+        "Spring": "pastel colors, airy fabrics, gentle sunlight tones, soft dresses or cardigans",
+        "Summer": "vibrant hues, short sleeves, breathable fabrics, playful accessories",
+        "Autumn": "warm earthy tones, layered outfits, scarves, knitwear, golden light",
+        "Winter": "cozy outfits, thicker materials, long sleeves, muted palettes, gentle contrast",
+    }
+    return styles.get(season, "neutral, balanced fashion style")
 
 # ------------------------------------------------------------
 # Individual Outfit Generator
 # ------------------------------------------------------------
 async def generate_outfit_image(name: str, prompt: str) -> str | None:
-    """
-    Generate an individual sibling outfit image based on their base portrait and style prompt.
-    Returns the local file path of the generated image.
-    """
     event = get_seasonal_event()
+    season = get_current_season()
     out_dir = "generated_outfits"
     os.makedirs(out_dir, exist_ok=True)
 
     date_str = datetime.now().strftime("%Y-%m-%d")
     filename = f"{out_dir}/{name}_{date_str}.png"
 
-    # Modify the prompt with seasonal context
-    full_prompt = f"{prompt} Outfit should reflect their personality and current mood."
-    if event:
-        full_prompt += f" Add a subtle seasonal influence for {event}."
+    fashion_desc = get_seasonal_style_description(season)
+    full_prompt = (
+        f"{prompt} Outfit should reflect {season} season fashion — {fashion_desc}. "
+        "Keep proportions realistic and color-coordinated."
+    )
 
-    # Will-specific fallback
+    if event:
+        full_prompt += f" Add a subtle influence from {event}."
+
     if name.lower() == "will":
-        full_prompt += " If timid, use masculine style; if confident, use feminine style."
+        full_prompt += (
+            " If Will feels timid, use his masculine portrait with modest fashion. "
+            "If confident, use his feminine portrait with expressive details."
+        )
 
     try:
-        log_event(f"[IMAGE_GEN] Generating outfit for {name} ({event or 'standard'}).")
+        log_event(f"[IMAGE_GEN] Generating outfit for {name} ({season}, {event or 'standard'}).")
         text2im(prompt=full_prompt, size="1024x1024", n=1)
         return filename
     except Exception as e:
@@ -58,83 +82,72 @@ async def generate_outfit_image(name: str, prompt: str) -> str | None:
 # Group Composite Generator
 # ------------------------------------------------------------
 async def generate_group_image(sibling_names: list[str]) -> str | None:
-    """
-    Generate a composite image featuring all siblings together
-    for special seasonal events (e.g., Halloween, Christmas).
-    """
     event = get_seasonal_event()
     if not event:
-        return None  # Only generate on special dates
+        return None
 
     out_dir = "generated_outfits"
     os.makedirs(out_dir, exist_ok=True)
     date_str = datetime.now().strftime("%Y-%m-%d")
     filename = f"{out_dir}/Family_{event}_{date_str}.png"
 
-    # Create event-aware composite prompt
+    # Create an event-aware composite scene
     if event == "Halloween":
         scene_prompt = (
-            "A group photo of the family dressed in coordinated Halloween outfits — "
-            "each showing their personality: Aria calm and witchy, Selene elegant and soft, "
-            "Cassandra bold and composed, Ivy mischievous, and Will subtly themed, shy but part of the group. "
-            "Background should be warm candlelight or glowing pumpkins."
+            "A group photo of the siblings dressed for Halloween: "
+            "Aria calm and witchy, Selene elegant and mystical, "
+            "Cassandra regal and composed, Ivy mischievous, "
+            "and Will shy but clearly part of the group. "
+            "Atmosphere: candlelight, pumpkins, warm colors."
         )
     elif event == "Christmas":
         scene_prompt = (
-            "A cozy family Christmas photo with all siblings wearing winter outfits "
-            "that match their personalities — festive sweaters, soft lighting, maybe a tree in the background."
+            "A cozy Christmas group photo — all siblings together by a softly lit tree, "
+            "wearing festive winter outfits that reflect their personalities."
         )
     elif event == "New Year":
         scene_prompt = (
-            "A New Year’s Eve group photo — everyone dressed semi-formally, soft lighting, fireworks in the background."
+            "A stylish New Year’s Eve photo — elegant semi-formal outfits, "
+            "gold and black accents, fireworks in the background."
         )
     elif event == "Valentine’s Day":
         scene_prompt = (
-            "A lighthearted Valentine’s Day group photo, showing affection and sibling warmth, "
-            "each in their color accents — pinks, reds, or whites."
-        )
-    elif event == "Spring":
-        scene_prompt = (
-            "A bright spring photo of the family in floral or pastel tones — outdoors in soft sunlight, natural smiles."
+            "A warm Valentine’s Day photo showing sibling affection — gentle reds, pinks, and soft lighting."
         )
     else:
-        scene_prompt = "A natural-looking group photo of the siblings together, matching personalities."
+        scene_prompt = (
+            "A natural family portrait with subtle event-themed touches matching their personalities."
+        )
 
     try:
-        log_event(f"[GROUP_IMAGE] Generating family group photo for {event}.")
+        log_event(f"[GROUP_IMAGE] Generating group photo for {event}.")
         text2im(prompt=scene_prompt, size="1792x1024", n=1)
         return filename
     except Exception as e:
-        log_event(f"[ERROR] Failed to generate group image for {event}: {e}")
+        log_event(f"[ERROR] Failed to generate group image: {e}")
         return None
 
 # ------------------------------------------------------------
-# Outfit Posting Wrapper (called by main.py)
+# Group Posting & Will's Reaction
 # ------------------------------------------------------------
 async def generate_and_post_daily_outfits(sisters, config):
-    """
-    Generates and posts individual outfits for all siblings.
-    On holidays, also generates a shared group image and posts it.
-    """
     from discord import File
+    from will_behavior import load_will_memory  # For confidence tracking
 
     event = get_seasonal_event()
-    out_dir = "generated_outfits"
-    os.makedirs(out_dir, exist_ok=True)
-
+    season = get_current_season()
     channel_id = config.get("family_group_channel")
+
     if not channel_id:
-        log_event("[WARN] No family_group_channel in config for outfit posting.")
+        log_event("[WARN] No family channel ID found for outfit posting.")
         return
 
+    # 🧥 Generate individual outfits
     for bot in sisters:
         name = bot.sister_info["name"]
         personality = bot.sister_info.get("personality", "neutral")
         mood = "confident" if name == "Cassandra" else "playful" if name == "Ivy" else "soft"
-        prompt = (
-            f"Generate a fashionable outfit for {name}, "
-            f"based on their personality ({personality}) and mood ({mood})."
-        )
+        prompt = f"Create an outfit for {name}, matching their {personality} nature and a {mood} tone."
 
         img_path = await generate_outfit_image(name, prompt)
         if img_path:
@@ -142,25 +155,31 @@ async def generate_and_post_daily_outfits(sisters, config):
                 channel = bot.get_channel(channel_id)
                 if channel:
                     await channel.send(
-                        f"👗 **{name}’s outfit of the day**{' — ' + event if event else ''}:",
+                        f"👗 **{name}’s outfit of the day** ({season}{' — ' + event if event else ''}):",
                         file=File(img_path),
                     )
-                    log_event(f"[OUTFIT] {name} posted {event or 'daily'} outfit.")
+                    log_event(f"[OUTFIT] {name} posted {event or season} outfit.")
             except Exception as e:
                 log_event(f"[ERROR] Failed to post outfit for {name}: {e}")
 
-    # 🎁 Generate and post group photo on event days
+    # 🎁 Group photo for events
     if event:
-        try:
-            group_path = await generate_group_image([s.sister_info["name"] for s in sisters])
-            if group_path:
-                main_bot = next((b for b in sisters if b.sister_info["name"] == "Aria"), sisters[0])
-                channel = main_bot.get_channel(channel_id)
-                if channel:
-                    await channel.send(
-                        f"📸 **Family {event} Group Photo!** ❤️",
-                        file=File(group_path),
-                    )
-                    log_event(f"[GROUP] Posted family {event} group image.")
-        except Exception as e:
-            log_event(f"[ERROR] Failed to post group image: {e}")
+        group_path = await generate_group_image([s.sister_info["name"] for s in sisters])
+        if group_path:
+            main_bot = next((b for b in sisters if b.sister_info["name"] == "Aria"), sisters[0])
+            channel = main_bot.get_channel(channel_id)
+            if channel:
+                await channel.send(f"📸 **Family {event} Group Photo!** ❤️", file=File(group_path))
+                log_event(f"[GROUP] Posted {event} family group image.")
+
+                # 💬 Will’s reaction (shy or confident)
+                will_mem = load_will_memory()
+                progress = will_mem.get("projects", {}).get("Personal task", {}).get("progress", 0.3)
+                timid = progress < 0.5
+                comment = (
+                    "I didn’t know we were taking a photo today… it turned out nice though."
+                    if timid
+                    else "We actually look kind of amazing here, huh? Don’t tell Ivy I said that."
+                )
+                await channel.send(f"🗨️ **Will:** {comment}")
+                log_event("[WILL] Added group photo comment.")
