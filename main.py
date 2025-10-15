@@ -12,7 +12,6 @@ import sisters_behavior
 from sisters_behavior import (
     send_morning_message,
     send_night_message,
-    send_spontaneous_task,
     get_today_rotation,
     get_current_theme,
 )
@@ -134,7 +133,6 @@ async def night_task():
 
 @tasks.loop(minutes=60)
 async def spontaneous_task():
-    await send_spontaneous_task(state, config, sisters)
 
 @tasks.loop(time=aedt_time(3, 0))
 async def nightly_update_task():
