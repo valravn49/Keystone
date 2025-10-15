@@ -1,81 +1,62 @@
 import os
-import json
 import asyncio
-import datetime
-import random
 import pytz
+from datetime import datetime
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import discord
-from discord.ext import commands, tasks
-from fastapi import FastAPI
+from discord.ext import commands
 
-import sisters_behavior
+# Internal modules
 from sisters_behavior import (
     send_morning_message,
     send_night_message,
-    get_today_rotation,
-    get_current_theme,
+    handle_sister_message,
 )
-from aria_commands import setup_aria_commands
+from will_behavior import (
+    ensure_will_systems,
+    will_handle_message,
+)
 from logger import log_event
+from config_loader import load_config
+from image_utils import generate_outfit_image  # ✅ requires image_gen integrated
 
-# Will behavior integration
-import will_behavior
-from will_behavior import ensure_will_systems, will_handle_message
+# ----------------------------
+# Load configuration & shared state
+# ----------------------------
+config = load_config()
+state = {"rotation_index": 0, "theme_index": 0}
 
-# Self-update integration
-from self_update import queue_update, apply_updates_if_sleeping, generate_organic_updates
+# ----------------------------
+# Timezone setup — Australian Eastern Daylight Time (AEST)
+# ----------------------------
+AEST = pytz.timezone("Australia/Sydney")
 
-# ---------------------------------------------------------------------
-# Load configuration
-# ---------------------------------------------------------------------
-with open("config.json", "r", encoding="utf-8") as f:
-    config = json.load(f)
+def get_aest_now():
+    return datetime.now(AEST)
 
-# Shared state
-state = {
-    "rotation_index": 0,
-    "theme_index": 0,
-    "last_theme_update": None,
-    "history": {},
-    "spontaneous_end_tasks": {},
-    "last_spontaneous_task": None,
-}
-
-# ---------------------------------------------------------------------
-# Timezone utilities — Australian Eastern Daylight Time
-# ---------------------------------------------------------------------
-AEDT = pytz.timezone("Australia/Sydney")
-
-def aedt_time(hour: int, minute: int = 0):
-    """Return a datetime.time in AEDT for scheduling tasks."""
-    dt = datetime.datetime.now(AEDT).replace(hour=hour, minute=minute, second=0, microsecond=0)
-    return dt.timetz()
-
-# ---------------------------------------------------------------------
+# ----------------------------
 # Discord setup
-# ---------------------------------------------------------------------
+# ----------------------------
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
-intents.messages = True
-intents.reactions = True
 
 class SisterBot(commands.Bot):
     def __init__(self, sister_info):
         super().__init__(command_prefix="!", intents=intents)
         self.sister_info = sister_info
 
-    async def setup_hook(self):
-        if self.sister_info["name"] == "Aria":
-            setup_aria_commands(
-                self.tree,
-                state,
-                lambda: sisters_behavior.get_today_rotation(state, config),
-                lambda: sisters_behavior.get_current_theme(state, config),
-                lambda: send_morning_message(state, config, sisters),
-                lambda: send_night_message(state, config, sisters),
-            )
-            await self.tree.sync()
+    async def on_ready(self):
+        log_event(f"[READY] {self.sister_info['name']} logged in as {self.user}")
+
+    async def on_message(self, message):
+        if message.author.bot:
+            return
+        author = str(message.author)
+        content = message.content
+        channel_id = message.channel.id
+        await handle_sister_message(state, config, sisters, author, content, channel_id)
+        await will_handle_message(state, config, [will_bot], author, content, channel_id)
 
 
 class WillBot(commands.Bot):
@@ -83,131 +64,120 @@ class WillBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.sister_info = will_info
 
-    async def setup_hook(self):
-        pass
+    async def on_ready(self):
+        log_event(f"[READY] Will logged in as {self.user}")
 
+    async def on_message(self, message):
+        if message.author.bot:
+            return
+        author = str(message.author)
+        content = message.content
+        channel_id = message.channel.id
+        await handle_sister_message(state, config, sisters, author, content, channel_id)
+        await will_handle_message(state, config, [self], author, content, channel_id)
 
-# Create bot instances
+# Instantiate all bots
 sisters = [SisterBot(s) for s in config["rotation"]]
 will_info = {"name": "Will", "env_var": "WILL_TOKEN"}
 will_bot = WillBot(will_info)
 
-# ---------------------------------------------------------------------
-# Discord events
-# ---------------------------------------------------------------------
-@sisters[0].event
-async def on_ready():
-    log_event("[SYSTEM] All sisters are waking up...")
-    for bot in sisters:
-        if bot.user:
-            log_event(f"{bot.sister_info['name']} logged in as {bot.user}")
-    if will_bot.user:
-        log_event(f"{will_bot.sister_info['name']} logged in as {will_bot.user}")
+# ----------------------------
+# Seasonal logic for outfits
+# ----------------------------
 
+def get_seasonal_event() -> str | None:
+    """Detect special seasonal events or holidays."""
+    today = get_aest_now()
+    month, day = today.month, today.day
 
-@sisters[0].event
-async def on_message(message):
-    if message.author.bot:
-        return
+    if month == 10 and day == 31:
+        return "Halloween"
+    elif month == 12 and 24 <= day <= 26:
+        return "Christmas"
+    elif (month == 12 and day == 31) or (month == 1 and day == 1):
+        return "New Year"
+    elif month == 2 and day == 14:
+        return "Valentine’s Day"
+    elif month == 9:
+        return "Spring"
+    return None
 
-    channel_id = message.channel.id
-    author = str(message.author)
-    content = message.content
-
-    # Sisters handle
-    await sisters_behavior.handle_sister_message(state, config, sisters, author, content, channel_id)
-    # Will handle
-    await will_handle_message(state, config, [will_bot], author, content, channel_id)
-
-# ---------------------------------------------------------------------
-# Task loops — rituals and updates
-# ---------------------------------------------------------------------
-
-@tasks.loop(time=aedt_time(6, 0))
-async def morning_task():
-    await send_morning_message(state, config, sisters)
-
-@tasks.loop(time=aedt_time(22, 0))
-async def night_task():
-    await send_night_message(state, config, sisters)
-
-@tasks.loop(minutes=60)
-async def spontaneous_task():
-
-@tasks.loop(time=aedt_time(3, 0))
-async def nightly_update_task():
-    """Apply organic and queued updates while siblings are asleep."""
-    organic_updates = generate_organic_updates(config, state)
-    bad_mood_chance = 0.15
+async def generate_daily_outfits():
+    """Generate daily outfit images for each sibling with seasonal flair."""
+    event = get_seasonal_event()
+    base_prompt = "Generate a fashionable outfit consistent with their personality and today's season."
+    if event:
+        base_prompt += f" Style should reflect {event} — subtle but fitting."
 
     for sister in config["rotation"]:
         name = sister["name"]
-        if name in organic_updates:
-            for upd in random.sample(organic_updates[name], k=random.randint(0, 2)):
-                queue_update(name, upd)
+        personality = sister.get("personality", "neutral")
+        mood = "confident" if name == "Cassandra" else "playful" if name == "Ivy" else "soft"
+        prompt = f"{base_prompt} For {name}, personality: {personality}, mood: {mood}."
+        if name == "Will":
+            prompt += " If Will feels timid, use his masculine base portrait. If confident, use his feminine portrait."
 
-        if random.random() < bad_mood_chance:
-            queue_update(
-                name,
-                {"behavior": "Bad mood today: shorter, snappier responses until night."},
-            )
+        try:
+            img_path = await generate_outfit_image(name, prompt)
+            if img_path:
+                log_event(f"[OUTFIT] Generated {event or 'daily'} outfit for {name}: {img_path}")
+        except Exception as e:
+            log_event(f"[ERROR] Outfit generation failed for {name}: {e}")
 
-        profile_path = f"data/{name}_Profile.txt"
-        apply_updates_if_sleeping(name, state, config, profile_path)
+# ----------------------------
+# Ritual scheduler (AEST)
+# ----------------------------
+scheduler = AsyncIOScheduler(timezone=AEST)
 
-    # Will also gets personality drift
-    queue_update(
-        "Will",
-        {"personality_shift": "Sometimes bursts outgoing, but retreats faster if flustered."},
-    )
-    profile_path = "data/Will_Profile.txt"
-    apply_updates_if_sleeping("Will", state, config, profile_path)
+async def run_morning_ritual():
+    log_event("[RITUAL] Morning ritual starting.")
+    await send_morning_message(state, config, sisters)
+    await generate_daily_outfits()
 
-# ---------------------------------------------------------------------
-# Loop guards
-# ---------------------------------------------------------------------
-@morning_task.before_loop
-async def before_morning():
-    await asyncio.sleep(5)
+async def run_night_ritual():
+    log_event("[RITUAL] Night ritual starting.")
+    await send_night_message(state, config, sisters)
 
-@night_task.before_loop
-async def before_night():
-    await asyncio.sleep(5)
+# ----------------------------
+# Startup
+# ----------------------------
+async def startup():
+    log_event("[SYSTEM] Starting all bots with AEST rituals and outfits.")
 
-@spontaneous_task.before_loop
-async def before_spontaneous():
-    await asyncio.sleep(10)
-
-@nightly_update_task.before_loop
-async def before_nightly():
-    await asyncio.sleep(20)
-
-# ---------------------------------------------------------------------
-# Run everything
-# ---------------------------------------------------------------------
-async def run_all():
+    # Start sisters
     for bot in sisters:
-        asyncio.create_task(bot.start(os.getenv(bot.sister_info["env_var"])))
-    asyncio.create_task(will_bot.start(os.getenv(will_bot.sister_info["env_var"])))
+        token = os.getenv(bot.sister_info["env_var"])
+        if token:
+            asyncio.create_task(bot.start(token))
+        else:
+            log_event(f"[ERROR] Missing token for {bot.sister_info['name']}")
 
-    morning_task.start()
-    night_task.start()
-    spontaneous_task.start()
-    nightly_update_task.start()
+    # Start Will
+    will_token = os.getenv(will_bot.sister_info["env_var"])
+    if will_token:
+        asyncio.create_task(will_bot.start(will_token))
+    else:
+        log_event("[WARN] Will token not found.")
 
+    # Schedule rituals
+    scheduler.add_job(run_morning_ritual, "cron", hour=6, minute=0, timezone=AEST)
+    scheduler.add_job(run_night_ritual, "cron", hour=22, minute=0, timezone=AEST)
+    scheduler.start()
+
+    # Background systems (Will chatter)
     ensure_will_systems(state, config, [will_bot])
+    log_event("[SYSTEM] Scheduler and background chatter active.")
 
-    log_event("[SYSTEM] All tasks started (FastAPI loop).")
+    while True:
+        await asyncio.sleep(3600)
 
-# ---------------------------------------------------------------------
-# FastAPI integration
-# ---------------------------------------------------------------------
-app = FastAPI()
-
-@app.on_event("startup")
-async def startup_event():
-    await run_all()
-
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
+# ----------------------------
+# Entrypoint
+# ----------------------------
+if __name__ == "__main__":
+    try:
+        asyncio.run(startup())
+    except KeyboardInterrupt:
+        log_event("[SHUTDOWN] Manual shutdown requested.")
+    except Exception as e:
+        log_event(f"[FATAL] Unhandled exception: {e}")
