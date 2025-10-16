@@ -1,113 +1,143 @@
-"""
-image_utils.py
-----------------
-Handles outfit and seasonal image generation for the sibling bots.
-Uses OpenAI's DALL-E API if available; otherwise falls back to logging mode.
-"""
-
-import os
+# … (imports and earlier sections unchanged)
+import json
 import random
 import datetime
+import pytz
+import base64
+import discord
+from openai import OpenAI
 from logger import log_event
 
-try:
-    # ✅ Real image generation (requires OPENAI_API_KEY)
-    from openai import OpenAI
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI()
+AEDT = pytz.timezone("Australia/Sydney")
 
-    def text2im(prompt: str, size: str = "1024x1024"):
-        """Generate an image via OpenAI DALL-E 3."""
-        try:
-            image = client.images.generate(model="gpt-image-1", prompt=prompt, size=size)
-            return image.data[0].url
-        except Exception as e:
-            log_event(f"[WARN] Image generation failed — falling back to log only: {e}")
-            return None
-
-except Exception as e:
-    # ✅ Safe fallback if OpenAI not installed or key missing
-    log_event(f"[INIT] OpenAI image client unavailable: {e}")
-
-    def text2im(prompt: str, size: str = "1024x1024"):
-        """Fallback: no real generation."""
-        log_event(f"[FAKE IMAGE] Would have generated: {prompt}")
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Outfit generation logic
-# ---------------------------------------------------------------------------
-
-SEASONAL_THEMES = {
-    12: "Christmas or festive cozy outfits with reds, greens, and soft layers",
-    10: "Halloween or autumn styles — warm tones, cozy sweaters, maybe costumes",
-    2: "Late-summer or back-to-school energy — lighter layers and soft colors",
-    6: "Winter in Australia — coats, scarves, practical layers",
-}
-
-def _seasonal_prompt_addition():
-    month = datetime.datetime.now().month
-    return SEASONAL_THEMES.get(month, "Casual everyday seasonal style appropriate to the month")
-
-
-def generate_outfit_prompt(name: str, personality: str, boldness: float = 0.5) -> str:
-    """
-    Builds a descriptive outfit prompt based on the sibling’s personality and current tone.
-    """
-    tone_descriptions = {
-        "Aria": "soft structured fashion with calm academic tones",
-        "Selene": "comfort-focused outfits with flowy fabrics and soft color palettes",
-        "Cassandra": "disciplined, elegant minimalism — practical but polished",
-        "Ivy": "bratty playful streetwear or cute chaos energy",
-        "Will_masc": "casual nerdy fit — hoodies, jeans, sneakers",
-        "Will_fem": "feminine androgynous outfits — skirts, light accessories, confidence under shyness",
+# -------------------------------------------------------------------
+# 🧍‍♀️ Outfit cross-awareness memory
+# -------------------------------------------------------------------
+def log_outfit(name: str, description: str, event: str):
+    """Store outfit info for the sibling."""
+    memory = load_memory(name)
+    entry = {
+        "date": str(datetime.datetime.now(AEDT).date()),
+        "event": event,
+        "description": description,
     }
+    memory.setdefault("outfit_log", []).append(entry)
+    memory["outfit_log"] = memory["outfit_log"][-30:]
+    save_memory(name, memory)
 
-    base = tone_descriptions.get(name, "balanced casual outfit")
-    season = _seasonal_prompt_addition()
+def get_recent_outfit_reference(name: str) -> str | None:
+    """Recall past outfit from the same sibling."""
+    memory = load_memory(name)
+    if not memory.get("outfit_log"):
+        return None
+    past = random.choice(memory["outfit_log"])
+    date = past["date"]
+    event = past.get("event", "Normal")
+    desc = past.get("description", "")
+    if event in ["Christmas", "Halloween", "Valentine's Day"]:
+        return f"You wore something similar back around {event.lower()} last time."
+    return f"I think you wore that same {desc.split()[0]} a while ago."
 
-    style = "bold expressive colors" if boldness > 0.7 else "subtle coordinated tones"
-    return (
-        f"{name}'s outfit today — {base}, {style}. "
-        f"Set in a bright soft-light background, clean framing. "
-        f"Include {season} influences."
-    )
-
-
-async def generate_and_post_daily_outfits(sisters, config, state):
+def get_cross_reference(name: str, others: list[str]) -> str | None:
     """
-    Generates daily outfits for each sibling (and Will’s masc/fem variation).
-    Each image is sent to Discord and logged.
+    Create a playful or affectionate reference about another sibling's outfit.
     """
+    if not others:
+        return None
+    target = random.choice(others)
+    target_mem = load_memory(target)
+    if not target_mem.get("outfit_log"):
+        return None
+    ref = target_mem["outfit_log"][-1]  # yesterday or today’s look
+    desc = ref.get("description", "")
+    tone = random.choice([
+        f"{target}'s look today actually kinda suits them.",
+        f"Not gonna lie, {target}'s outfit looked comfy — jealous.",
+        f"I saw what {target} wore today… bold choice!",
+        f"{target} keeps outdoing us lately with those outfits.",
+        f"{target}’s outfit reminds me of one they wore ages ago.",
+    ])
+    if desc:
+        tone += f" ({desc})"
+    return tone
 
-    try:
-        for bot in sisters:
-            sname = bot.sister_info["name"]
+# -------------------------------------------------------------------
+# 🧵 Outfit generation and posting (expanded)
+# -------------------------------------------------------------------
+async def generate_and_post_daily_outfits(config: dict, sisters: list):
+    event = detect_special_event()
+    season = _get_season()
 
-            # Boldness tweaks (influences color & style)
-            boldness = random.uniform(0.3, 0.9)
+    all_outfits = {}
 
-            # Will has masc/fem split
-            if sname == "Will":
-                mode = "Will_fem" if random.random() > 0.7 else "Will_masc"
-                prompt = generate_outfit_prompt(mode, "shy-nerdy but expressive", boldness)
-            else:
-                prompt = generate_outfit_prompt(sname, bot.sister_info.get("personality", ""), boldness)
+    # STEP 1: generate and store all images + metadata
+    for bot in sisters:
+        name = bot.sister_info["name"]
+        mood = random.choice(["relaxed", "focused", "playful", "gentle"])
+        boldness = random.uniform(0.3, 0.9)
+        prompt, base = generate_outfit_prompt(name, mood=mood, boldness=boldness)
+        img_data = await generate_image(prompt, base_image_path=base)
+        if not img_data:
+            continue
 
-            img_url = text2im(prompt)
+        path = _save_temp_image(img_data, name)
+        description = f"{mood} mood, {season} season, {event} look"
+        log_outfit(name, description, event)
+        all_outfits[name] = {"path": path, "description": description}
 
-            if img_url:
-                try:
+    # STEP 2: post all outfits, then trigger cross-comments
+    for bot in sisters:
+        name = bot.sister_info["name"]
+        if name not in all_outfits:
+            continue
+
+        try:
+            channel = bot.get_channel(config["family_group_channel"])
+            if not channel:
+                continue
+
+            recall = get_recent_outfit_reference(name)
+            caption = f"📸 **{name}’s outfit of the day** — {event} ({season.title()})"
+            if recall:
+                caption += f"\n_{recall}_"
+
+            await channel.send(
+                caption,
+                file=discord.File(all_outfits[name]["path"], filename=f"{name}_outfit.png")
+            )
+            log_event(f"[POST] {name} outfit posted.")
+
+        except Exception as e:
+            log_event(f"[ERROR] Failed posting outfit for {name}: {e}")
+
+    # STEP 3: have random siblings react to each other
+    await asyncio.sleep(random.randint(5, 15))  # short pause so posts appear before chatter
+    await trigger_cross_outfit_comments(sisters, config)
+    log_event("[POST] Outfit cross-reactions triggered.")
+
+# -------------------------------------------------------------------
+# 💬 Outfit reaction chatter
+# -------------------------------------------------------------------
+async def trigger_cross_outfit_comments(sisters: list, config: dict):
+    """
+    After outfits are posted, generate 1–3 quick sibling comments referencing each other’s looks.
+    """
+    speaker_pool = random.sample([s.sister_info["name"] for s in sisters], k=random.randint(1, 3))
+
+    for speaker in speaker_pool:
+        others = [n.sister_info["name"] for n in sisters if n.sister_info["name"] != speaker]
+        line = get_cross_reference(speaker, others)
+        if not line:
+            continue
+
+        try:
+            for bot in sisters:
+                if bot.sister_info["name"] == speaker:
                     ch = bot.get_channel(config["family_group_channel"])
                     if ch:
-                        await ch.send(f"🧵 **{sname}’s outfit of the day**\n{img_url}")
-                        log_event(f"[OUTFIT] {sname} outfit generated: {img_url}")
-                except Exception as e:
-                    log_event(f"[ERROR] Could not post outfit image for {sname}: {e}")
-            else:
-                log_event(f"[OUTFIT LOG] {sname}: {prompt}")
-
-        state["last_outfit_update"] = datetime.datetime.now().isoformat()
-
-    except Exception as e:
-        log_event(f"[ERROR] Daily outfit generation failed: {e}")
+                        await ch.send(f"💬 {line}")
+                        log_event(f"[CHAT] {speaker} cross-comment: {line}")
+                    break
+        except Exception as e:
+            log_event(f"[ERROR] Cross outfit comment failed: {e}")
