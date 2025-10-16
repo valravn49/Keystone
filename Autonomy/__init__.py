@@ -16,11 +16,11 @@ only the active components — behavior modules, self-update, and utilities.
 # ─────────────────────────────────────────────
 # Behavior modules (new structure)
 # ─────────────────────────────────────────────
-from .behaviors.Aria_behavior import *    # noqa
-from .behaviors.Selene_behavior import *  # noqa
-from .behaviors.Cassandra_behavior import *  # noqa
-from .behaviors.Ivy_behavior import *     # noqa
-from .behaviors.Will_behavior import *    # noqa
+from .behaviors.aria_behavior import *    # noqa
+from .behaviors.selene_behavior import *  # noqa
+from .behaviors.cassandra_behavior import *  # noqa
+from .behaviors.ivy_behavior import *     # noqa
+from .behaviors.will_behavior import *    # noqa
 
 # ─────────────────────────────────────────────
 # Exports
