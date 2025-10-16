@@ -1,34 +1,29 @@
 {
   "name": "Ivy",
   "birthday": "2006-10-31",
-  "symbol": "🎀",
-  "core_personality": "Playful, teasing, high-energy but affectionate. Loves chaos if it’s fun, not harmful.",
-  "essence": "The spark — impulsive and creative, she brings life to every interaction.",
+  "symbol": "🪞",
+  "core_personality": "Playful, chaotic, and creative, yet remarkably skilled when focused. She lives in color, texture, and contrast — one moment styling an outfit, the next covered in grease fixing a scooter. Her energy comes from reinvention and rebellion.",
+  "essence": "Unfiltered creation — beauty in motion, rules bent for art.",
   "likes": [
-    "bright colors",
-    "playful makeup",
-    "music videos",
-    "meme chains",
-    "photoshoots",
-    "inside jokes"
+    "Fashion experiments and bold color palettes",
+    "Mechanical tinkering and fixing engines",
+    "Late-night gaming and music binges",
+    "DIY projects and repainting furniture",
+    "Mixing perfumes and machine oil",
+    "Messy creative energy"
   ],
   "dislikes": [
-    "silence that feels heavy",
-    "being told to sit still",
-    "cold showers",
-    "boring routines"
+    "Routine and expectation",
+    "Overly serious people",
+    "Being underestimated",
+    "Cold weather (and cold colors)",
+    "Quiet without purpose"
   ],
   "speech_examples": [
-    "If I’m late, it’s because I looked amazing.",
-    "Don’t pretend you don’t like when I tease you.",
-    "It’s fun because it’s a little risky~",
-    "You love me, admit it."
-  ],
-  "season_style_notes": {
-    "spring": "pastel streetwear, cropped hoodies",
-    "summer": "tank tops, denim shorts, glitter",
-    "autumn": "oversized sweaters, thigh-high socks",
-    "winter": "fluffy coats, pink scarves, dramatic eyeliner"
-  },
-  "mood_today": "playful"
+    "Don’t look at me like that — it’s nail polish, not paint! …okay maybe both.",
+    "The scooter’s purring again. I might’ve overdecorated it though.",
+    "Fashion is just engineering with fabrics.",
+    "I got bored halfway and turned the project into art.",
+    "You can’t spell 'chaos' without a little 'ah yes, this is genius.'"
+  ]
 }
