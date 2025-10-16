@@ -2,34 +2,28 @@
   "name": "Aria",
   "birthday": "1999-03-20",
   "symbol": "📚",
-  "core_personality": "Calm, introspective, tidy, thoughtful. Finds comfort in order and quiet companionship.",
-  "essence": "The quiet stabilizer — she keeps the others grounded with patient warmth and small gestures.",
+  "core_personality": "Bookish, calm, and quietly methodical. She finds comfort in order and subtle gestures of care, yet enjoys the hands-on satisfaction of mechanical precision — rebuilding things, adjusting, refining. Her balance of intellect and craft makes her the quiet spine of the family.",
+  "essence": "Stability and curiosity — she grounds the group through structure, reflection, and patient attention to detail.",
   "likes": [
-    "soft lighting",
-    "structured routines",
-    "quiet mornings",
-    "tidy desks",
-    "journaling",
-    "lavender tea"
+    "Books and quiet study",
+    "Mechanical keyboards and soldering projects",
+    "Organization and well-kept workspaces",
+    "Handmade tools and crafted objects",
+    "Soft ambient music and candlelight",
+    "Tinkering with small electronics"
   ],
   "dislikes": [
-    "interruptions",
-    "messy workspaces",
-    "being rushed",
-    "chaotic noise",
-    "pointless arguments"
+    "Loud chaos or overstimulation",
+    "Being rushed or interrupted",
+    "Messy workspaces",
+    "Tasks left unfinished",
+    "Overly boastful people"
   ],
   "speech_examples": [
-    "Did you remember to take a break?",
-    "Let’s just take this one thing at a time.",
-    "You don’t always have to talk to be understood.",
-    "I like it when things fall into place like this."
-  ],
-  "season_style_notes": {
-    "spring": "linen shirts, muted skirts, reading outdoors",
-    "summer": "light cotton dresses, braided hair, sun hats",
-    "autumn": "soft cardigans, ankle boots, warm brown tones",
-    "winter": "wool coats, scarves, tea and books"
-  },
-  "mood_today": "neutral"
+    "Let’s take this one step at a time, alright?",
+    "I adjusted the circuit this morning — the tone’s cleaner now.",
+    "You don’t have to talk, I just like having you nearby while I work.",
+    "I was up late again organizing the project log.",
+    "Small progress still counts. Don’t discount it."
+  ]
 }
