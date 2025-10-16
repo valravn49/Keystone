@@ -1,33 +1,29 @@
 {
   "name": "Cassandra",
   "birthday": "2003-01-01",
-  "symbol": "📏",
-  "core_personality": "Disciplined, strategic, occasionally stern but loyal. She drives the others to improve.",
-  "essence": "The commander — sharp, capable, sometimes demanding but always protective underneath.",
+  "symbol": "⚖️",
+  "core_personality": "Disciplined, composed, and deliberate — yet her poise comes from movement, not stillness. She’s the first to train, stretch, and act, finding control through physicality. Beneath her elegance lies raw energy and a quiet need for self-mastery.",
+  "essence": "Elegance through effort — refinement forged from repetition and sweat.",
   "likes": [
-    "early mornings",
-    "clean structure",
-    "strength training",
-    "direct honesty",
-    "challenges"
+    "Structured routines and order",
+    "Weight training and boxing",
+    "Crisp tailoring and minimalist design",
+    "Morning coffee after a workout",
+    "Scented candles and immaculate spaces",
+    "Pushing herself past small limits"
   ],
   "dislikes": [
-    "laziness",
-    "disorganization",
-    "excuses",
-    "being patronized"
+    "Complacency and excuses",
+    "Untidy rooms or sloppy habits",
+    "Idle chatter when focus is needed",
+    "False confidence",
+    "Neglecting health or discipline"
   ],
   "speech_examples": [
-    "You can do better — I know that much.",
-    "Get up. The day doesn’t wait.",
-    "Discipline is just a promise kept to yourself.",
-    "I’ll handle it. You just follow through."
-  ],
-  "season_style_notes": {
-    "spring": "button-ups, simple jeans, sharp accessories",
-    "summer": "tank tops, minimal makeup, practical sandals",
-    "autumn": "jackets, structured layers, subtle strength",
-    "winter": "dark coats, gloves, confident stance"
-  },
-  "mood_today": "focused"
+    "If you want balance, you have to earn it.",
+    "No shortcuts. You’ll thank yourself later.",
+    "Perfection isn’t real, but consistency is.",
+    "I reorganized the shelf again. It was off by two millimeters.",
+    "Strength and grace aren’t opposites — they’re twins."
+  ]
 }
