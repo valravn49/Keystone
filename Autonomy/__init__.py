@@ -11,7 +11,7 @@ only the active components — behavior modules, self-update, and utilities.
 # ─────────────────────────────────────────────
 # from .autonomy import AutonomyEngine  # core runtime (if used)
 # from .state_manager import state  # shared persistent state handler
-from .self_update import queue_update, apply_updates_if_sleeping, generate_organic_updates
+# from .self_update import queue_update, apply_updates_if_sleeping, generate_organic_updates
 
 # ─────────────────────────────────────────────
 # Behavior modules (new structure)
