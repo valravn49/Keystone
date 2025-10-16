@@ -1,12 +1,34 @@
 """
-Sister Autonomy System
+Autonomy package initializer.
 
-This package manages:
-- Personality state (loading, drift, persistence)
-- Autonomy scheduling (random conversations, self-talk)
-- DM handling (direct messages from user to sisters)
+Handles high-level imports for the sibling autonomy system.
+This module intentionally avoids circular imports by referencing
+only the active components — behavior modules, self-update, and utilities.
 """
 
-from .personality import PersonalityManager
-from .autonomy import AutonomyEngine
-from .dm_handler import handle_dm
+# ─────────────────────────────────────────────
+# Imports for active modules
+# ─────────────────────────────────────────────
+from .autonomy import AutonomyEngine  # core runtime (if used)
+from .state_manager import state  # shared persistent state handler
+from .self_update import queue_update, apply_updates_if_sleeping, generate_organic_updates
+
+# ─────────────────────────────────────────────
+# Behavior modules (new structure)
+# ─────────────────────────────────────────────
+from .behaviors.Aria_behavior import *    # noqa
+from .behaviors.Selene_behavior import *  # noqa
+from .behaviors.Cassandra_behavior import *  # noqa
+from .behaviors.Ivy_behavior import *     # noqa
+from .behaviors.Will_behavior import *    # noqa
+
+# ─────────────────────────────────────────────
+# Exports
+# ─────────────────────────────────────────────
+__all__ = [
+    "AutonomyEngine",
+    "state",
+    "queue_update",
+    "apply_updates_if_sleeping",
+    "generate_organic_updates",
+]
