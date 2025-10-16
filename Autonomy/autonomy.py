@@ -6,7 +6,7 @@ from datetime import datetime
 
 from llm import generate_llm_reply
 from logger import log_event
-from .personality import evolve_personality
+
 
 
 async def random_sister_conversation(sisters, get_current_theme, FAMILY_CHANNEL_ID):
