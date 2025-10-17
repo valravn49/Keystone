@@ -1,148 +1,144 @@
 import os
+import json
+import random
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 
-# -------------------------------------------------------------------
-# Core imports
-# -------------------------------------------------------------------
-from logger import log_event
+import discord
+from discord.ext import commands, tasks
+from fastapi import FastAPI
+
+# -------------------------------
+# Local imports
+# -------------------------------
 from Autonomy.state_manager import state, load_state, save_state
+from logger import log_event
 from image_utils import generate_and_post_daily_outfits
-from workouts import get_today_workout
 
-# -------------------------------------------------------------------
-# Behavior imports (aliased for consistency)
-# -------------------------------------------------------------------
-from Autonomy.behaviors.aria_behavior import (
-    aria_handle_message as handle_aria_behavior,
-    ensure_aria_systems,
-)
-from Autonomy.behaviors.selene_behavior import (
-    selene_handle_message as handle_selene_behavior,
-    ensure_selene_systems,
-)
-from Autonomy.behaviors.cassandra_behavior import (
-    cass_handle_message as handle_cassandra_behavior,
-    ensure_cass_systems,
-)
-from Autonomy.behaviors.ivy_behavior import (
-    ivy_handle_message as handle_ivy_behavior,
-    ensure_ivy_systems,
-)
-from Autonomy.behaviors.will_behavior import (
-    will_handle_message as handle_will_behavior,
-    ensure_will_systems,
-)
+# Import behavior modules
+from Autonomy.behaviors.aria_behavior import ensure_aria_systems, aria_handle_message
+from Autonomy.behaviors.selene_behavior import ensure_selene_systems, selene_handle_message
+from Autonomy.behaviors.cass_behavior import ensure_cassandra_systems, cassandra_handle_message
+from Autonomy.behaviors.ivy_behavior import ensure_ivy_systems, ivy_handle_message
+from Autonomy.behaviors.will_behavior import ensure_will_systems, will_handle_message
 
-# -------------------------------------------------------------------
-# Rituals (morning/night)
-# -------------------------------------------------------------------
-from sisters_behavior import send_morning_message, send_night_message, send_spontaneous_task
+# -------------------------------
+# Load config
+# -------------------------------
+with open("config.json", "r", encoding="utf-8") as f:
+    config = json.load(f)
 
-# -------------------------------------------------------------------
-# Configuration
-# -------------------------------------------------------------------
-AEST = pytz.timezone("Australia/Sydney")
-DAILY_MORNING_HOUR = 6
-DAILY_NIGHT_HOUR = 21
-SPONTANEOUS_INTERVAL_MIN = 60 * 30
-SPONTANEOUS_INTERVAL_MAX = 60 * 90
+# Timezone for all scheduled tasks (Australian Eastern Daylight Time)
+AEDT = pytz.timezone("Australia/Sydney")
 
-# -------------------------------------------------------------------
-# Async scheduling helpers
-# -------------------------------------------------------------------
-async def run_morning_ritual(config, sisters):
-    """Trigger morning message, workout, and outfit generation."""
-    log_event("☀️ Running morning ritual...")
-    await send_morning_message(state, config, sisters)
-    await generate_and_post_daily_outfits(config, sisters)
+# Discord Intents
+intents = discord.Intents.default()
+intents.message_content = True
+intents.guilds = True
+
+# -------------------------------
+# Sister bot class
+# -------------------------------
+class SisterBot(commands.Bot):
+    def __init__(self, sister_info):
+        super().__init__(command_prefix="!", intents=intents)
+        self.sister_info = sister_info
+
+# Create bot instances for all sisters
+sisters = [SisterBot(s) for s in config["rotation"]]
+
+# -------------------------------
+# Bot Events
+# -------------------------------
+@sisters[0].event
+async def on_ready():
+    log_event("🌙 All sisters online.")
+    for bot in sisters:
+        if bot.user:
+            log_event(f"{bot.sister_info['name']} logged in as {bot.user}")
+    log_event("All systems running.")
+
+@sisters[0].event
+async def on_message(message):
+    if message.author.bot:
+        return
+
+    author = str(message.author)
+    content = message.content
+    channel_id = message.channel.id
+
+    # Route message to handlers
+    await aria_handle_message(state, config, sisters, author, content, channel_id)
+    await selene_handle_message(state, config, sisters, author, content, channel_id)
+    await cassandra_handle_message(state, config, sisters, author, content, channel_id)
+    await ivy_handle_message(state, config, sisters, author, content, channel_id)
+    await will_handle_message(state, config, sisters, author, content, channel_id)
+
+# -------------------------------
+# Task Scheduling
+# -------------------------------
+def aedt_time(hour: int, minute: int = 0):
+    """Return a timezone-aware datetime.time in AEDT."""
+    now = datetime.now(AEDT)
+    return now.replace(hour=hour, minute=minute, second=0, microsecond=0).timetz()
+
+@tasks.loop(time=aedt_time(6, 0))
+async def morning_task():
+    log_event("☀️ Morning ritual started.")
+    await generate_and_post_daily_outfits(sisters, config)
     save_state(state)
-    log_event("✅ Morning ritual complete.")
 
-async def run_night_ritual(config, sisters):
-    """Trigger nightly reflection and prep for tomorrow."""
-    log_event("🌙 Running night ritual...")
-    await send_night_message(state, config, sisters)
-    save_state(state)
-    log_event("✅ Night ritual complete.")
-
-async def run_spontaneous_conversation(config, sisters):
-    """Occasional mid-day sibling chatter."""
-    log_event("💬 Checking for spontaneous chatter...")
-    await send_spontaneous_task(state, config, sisters)
+@tasks.loop(time=aedt_time(22, 0))
+async def night_task():
+    log_event("🌙 Night ritual started.")
     save_state(state)
 
-# -------------------------------------------------------------------
-# Main scheduler
-# -------------------------------------------------------------------
-async def scheduler_loop(config, sisters, will_bot):
-    """Run periodic checks for time-based rituals and chatter."""
-    last_morning = None
-    last_night = None
-    last_spontaneous = datetime.now(AEST)
+# -------------------------------
+# System Startup
+# -------------------------------
+async def start_family(config, sisters):
+    """Start all bots, systems, and tasks."""
+    load_state()
 
-    # Start background chatter loops for each sibling
+    # Start chatter systems
     ensure_aria_systems(state, config, sisters)
     ensure_selene_systems(state, config, sisters)
     ensure_cassandra_systems(state, config, sisters)
     ensure_ivy_systems(state, config, sisters)
-    ensure_will_systems(state, config, [will_bot])
+    ensure_will_systems(state, config, sisters)
 
-    log_event("🕒 Scheduler started under AEST timezone.")
+    # Start Discord bots
+    for bot in sisters:
+        asyncio.create_task(bot.start(os.getenv(bot.sister_info["env_var"])))
 
-    while True:
-        now = datetime.now(AEST)
+    # Start scheduled tasks
+    morning_task.start()
+    night_task.start()
 
-        # Morning ritual at 6 AM
-        if now.hour == DAILY_MORNING_HOUR and (not last_morning or (now - last_morning).seconds > 3600):
-            await run_morning_ritual(config, sisters)
-            last_morning = now
+    log_event("🪶 Family system fully launched.")
 
-        # Night ritual at 9 PM
-        if now.hour == DAILY_NIGHT_HOUR and (not last_night or (now - last_night).seconds > 3600):
-            await run_night_ritual(config, sisters)
-            last_night = now
-
-        # Random spontaneous sibling chatter
-        if (now - last_spontaneous).seconds > SPONTANEOUS_INTERVAL_MIN:
-            if (now - last_spontaneous).seconds > SPONTANEOUS_INTERVAL_MAX or os.urandom(1)[0] > 128:
-                await run_spontaneous_conversation(config, sisters)
-                last_spontaneous = now
-
-        await asyncio.sleep(60)  # Check every minute
-
-# -------------------------------------------------------------------
-# Discord startup
-# -------------------------------------------------------------------
-async def start_family(config, sisters, will_bot):
-    """Start all Discord bots and launch scheduler."""
-    log_event("🚀 Starting family bots...")
-    load_state()
-
-    try:
-        await asyncio.gather(
-            *[s.start(s.token) for s in sisters],
-            will_bot.start(will_bot.token),
-            scheduler_loop(config, sisters, will_bot),
-        )
-    except Exception as e:
-        log_event(f"[ERROR] Family startup failed: {e}")
-    finally:
-        save_state(state)
-        log_event("💾 State saved and bots shut down.")
-
-# -------------------------------------------------------------------
-# Entrypoint
-# -------------------------------------------------------------------
+# -------------------------------
+# Run standalone (no uvicorn)
+# -------------------------------
 if __name__ == "__main__":
-    import config
+    asyncio.run(start_family(config, sisters))
 
-    sisters = config.SISTERS
-    will_bot = config.WILL_BOT
+# -------------------------------
+# Optional FastAPI interface
+# -------------------------------
+app = FastAPI()
 
-    try:
-        asyncio.run(start_family(config.CONFIG, sisters, will_bot))
-    except KeyboardInterrupt:
-        log_event("🛑 Manual shutdown triggered.")
-        save_state(state)
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(start_family(config, sisters))
+    log_event("🌐 FastAPI startup triggered family launch.")
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "time": datetime.now(AEDT).strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "rotation_index": state.get("rotation_index"),
+        "theme_index": state.get("theme_index"),
+    }
