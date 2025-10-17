@@ -24,7 +24,7 @@ from Autonomy.behaviors.selene_behavior import (
 )
 from Autonomy.behaviors.cassandra_behavior import (
     cass_handle_message as handle_cassandra_behavior,
-    ensure_cassandra_systems,
+    ensure_cass_systems,
 )
 from Autonomy.behaviors.ivy_behavior import (
     ivy_handle_message as handle_ivy_behavior,
