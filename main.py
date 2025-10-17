@@ -23,7 +23,7 @@ from Autonomy.behaviors.selene_behavior import (
     ensure_selene_systems,
 )
 from Autonomy.behaviors.cassandra_behavior import (
-    cassandra_handle_message as handle_cassandra_behavior,
+    cass_handle_message as handle_cassandra_behavior,
     ensure_cassandra_systems,
 )
 from Autonomy.behaviors.ivy_behavior import (
