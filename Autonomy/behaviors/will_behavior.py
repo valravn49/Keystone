@@ -1,285 +1,175 @@
-import os
-import json
-import random
-import asyncio
+import os, json, random, asyncio
 from datetime import datetime
-from typing import Dict, Optional, List
+from typing import Dict, List, Optional
 
 from llm import generate_llm_reply
 from logger import log_event
 
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
-WILL_PERSONALITY_JSON = "/Autonomy/personalities/Will_Personality.json"
-WILL_MEMORY_JSON = "/Autonomy/memory/Will_Memory.json"
+try:
+    from image_utils import generate_and_post_outfit
+except Exception:
+    generate_and_post_outfit = None
 
-# ---------------------------------------------------------------------------
-# Config & pacing
-# ---------------------------------------------------------------------------
-WILL_MIN_SLEEP = 40 * 60
-WILL_MAX_SLEEP = 100 * 60
+PERSONALITY_JSON = "/Autonomy/personalities/Will_Personality.json"
+MEMORY_JSON      = "/Autonomy/memory/Will_Memory.json"
 
-RANT_CHANCE = 0.12
-TIMID_BASE_PROB = 0.75
-INTEREST_HIT_BOOST = 0.35
-IVY_BOOST = 0.25
+MIN_SLEEP = 40 * 60
+MAX_SLEEP = 100 * 60
+SPONT_OUTFIT_MAX_PER_DAY = 1
+SPONT_OUTFIT_PROB = 0.06    # Will changes fit least often (but can!)
+SPONT_CHAT_BASE = 0.10
+MENTION_FORCE = True
 
-# ---------------------------------------------------------------------------
-# Fallback favorites pool (includes new entries)
-# ---------------------------------------------------------------------------
-WILL_FAVORITES_POOL = [
-    "The Legend of Zelda: Tears of the Kingdom",
-    "Final Fantasy XIV",
-    "Hades",
-    "Stardew Valley",
-    "Hollow Knight",
-    "Elden Ring",
-    "Nier: Automata",
-    "Zenless Zone Zero",
-    "Little Nightmares",
-    "retro game consoles",
-    "PC building",
-    "VR headsets",
-    "indie games",
-    "soundtrack analysis videos",
-    "concept art showcases"
+# Fallback favs (per your request)
+FALLBACK_FAVS = [
+    "The Legend of Zelda: Tears of the Kingdom", "Final Fantasy XIV", "Hades",
+    "Stardew Valley", "Hollow Knight", "Elden Ring",
+    "Nier: Automata", "Zenless Zone Zero", "Little Nightmares",
+    "VR headsets", "retro game consoles", "PC building",
 ]
 
-# ---------------------------------------------------------------------------
-# JSON helpers
-# ---------------------------------------------------------------------------
-def _load_json(path: str, default: dict) -> dict:
+def _load_json(p, d):
     try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
                 return json.load(f)
     except Exception as e:
-        log_event(f"[WARN] Will JSON read failed {path}: {e}")
-    return default
+        log_event(f"[Will][WARN] read {p} failed: {e}")
+    return d
 
-
-def load_will_profile() -> Dict:
-    profile = _load_json(WILL_PERSONALITY_JSON, {})
-    profile.setdefault("style", ["timid", "soft-spoken", "creative"])
-    profile.setdefault("interests", ["games", "music", "storytelling", "art"])
-    profile.setdefault("favorites", WILL_FAVORITES_POOL)
-    return profile
-
-
-def load_will_memory() -> Dict:
-    mem = _load_json(WILL_MEMORY_JSON, {"projects": {}, "recent_notes": []})
-    mem.setdefault("projects", {})
-    mem.setdefault("recent_notes", [])
-    return mem
-
-
-def save_will_memory(mem: Dict):
+def _save_json(p, data):
     try:
-        os.makedirs(os.path.dirname(WILL_MEMORY_JSON), exist_ok=True)
-        with open(WILL_MEMORY_JSON, "w", encoding="utf-8") as f:
-            json.dump(mem, f, ensure_ascii=False, indent=2)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        log_event(f"[WARN] Will memory write failed: {e}")
+        log_event(f"[Will][WARN] write {p} failed: {e}")
 
-# ---------------------------------------------------------------------------
-# Schedule
-# ---------------------------------------------------------------------------
-def assign_will_schedule(state: Dict, config: Dict):
+def load_profile() -> Dict:
+    d = _load_json(PERSONALITY_JSON, {})
+    d.setdefault("core_personality", "Shy, nerdy, hesitant; brief bursts of boldness.")
+    d.setdefault("likes", ["tech", "games", "anime", "music"])
+    d.setdefault("style", ["casual", "timid", "sometimes playful"])
+    d.setdefault("favorites", FALLBACK_FAVS)
+    return d
+
+def load_memory() -> Dict:
+    return _load_json(MEMORY_JSON, {
+        "projects": {}, "recent_notes": [], "outfits_today": 0, "last_outfit_day": None,
+        "bold_today": False
+    })
+
+def save_memory(mem: Dict): _save_json(MEMORY_JSON, mem)
+
+def _hour_in_range(now_h: int, start: int, end: int) -> bool:
+    if start == end: return True
+    if start < end:  return start <= now_h < end
+    return now_h >= start or now_h < end
+
+def _pick_hour(span: List[int]) -> int:
+    lo, hi = int(span[0]), int(span[1])
+    if hi >= lo: return random.randint(lo, hi)
+    return random.randint(lo, 23) if random.random() < (24 - lo)/(24 - lo + hi + 1e-9) else random.randint(0, hi)
+
+def assign_schedule(state: Dict, config: Dict):
     today = datetime.now().date()
-    key = "will_schedule"
-    kd = f"{key}_date"
-    if state.get(kd) == today and key in state:
-        return state[key]
+    key, kd = "will_schedule", "will_schedule_date"
+    if state.get(kd) == today and key in state: return state[key]
     scfg = (config.get("schedules", {}) or {}).get("Will", {"wake": [10, 12], "sleep": [0, 2]})
-    def pick(span): return random.randint(int(span[0]), int(span[1]))
-    schedule = {"wake": pick(scfg["wake"]), "sleep": pick(scfg["sleep"])}
-    state[key] = schedule; state[kd] = today
-    return schedule
+    sch = {"wake": _pick_hour(scfg["wake"]), "sleep": _pick_hour(scfg["sleep"])}
+    state[key] = sch; state[kd] = today; return sch
 
+def is_online(state: Dict, config: Dict) -> bool:
+    sc = assign_schedule(state, config)
+    return _hour_in_range(datetime.now().hour, sc["wake"], sc["sleep"])
 
-def _hour_in_range(now_h: int, wake: int, sleep: int) -> bool:
-    if wake == sleep:
-        return True
-    if wake < sleep:
-        return wake <= now_h < sleep
-    return now_h >= wake or now_h < sleep
+def _progress_phrase(progress: float) -> str:
+    if progress >= 1.0: return "I actually finished it — quietly proud."
+    if progress >= 0.7: return "Almost done, just polishing the last bits."
+    if progress >= 0.4: return "Midway… second-guessing, but it’s moving."
+    return "Just started — barely anything to show yet."
 
-
-def is_will_online(state: Dict, config: Dict) -> bool:
-    sc = assign_will_schedule(state, config)
-    now_h = datetime.now().hour
-    return _hour_in_range(now_h, sc["wake"], sc["sleep"])
-
-# ---------------------------------------------------------------------------
-# Progress phrasing
-# ---------------------------------------------------------------------------
-PROGRESS_PHRASES = {
-    "early": [
-        "I barely started. Still… kinda fun figuring it out.",
-        "I’ve got like one sketch done, but it’s something."
-    ],
-    "mid": [
-        "It’s coming along — rough edges, but I like it.",
-        "Halfway there, I think. It keeps changing on me."
-    ],
-    "late": [
-        "Almost done. Just adding polish now.",
-        "So close — I keep redoing tiny details though."
-    ],
-    "done": [
-        "Finished it! I don’t hate it… which is rare.",
-        "It’s done. Quietly proud of this one."
-    ]
-}
-
-
-def describe_progress(progress: float) -> str:
-    if progress >= 1.0:
-        return random.choice(PROGRESS_PHRASES["done"])
-    elif progress >= 0.7:
-        return random.choice(PROGRESS_PHRASES["late"])
-    elif progress >= 0.4:
-        return random.choice(PROGRESS_PHRASES["mid"])
-    else:
-        return random.choice(PROGRESS_PHRASES["early"])
-
-# ---------------------------------------------------------------------------
-# Favorites rotation (for chatter topics)
-# ---------------------------------------------------------------------------
-def get_rotating_favorites(state: Dict, config: Dict, count: int = 3) -> List[str]:
-    today = datetime.now().date()
-    key = "will_favorites_today"
-    if state.get(f"{key}_date") == today and key in state:
-        return state[key]
-    profile = load_will_profile()
-    pool = profile.get("favorites", WILL_FAVORITES_POOL)
-    picks = random.sample(pool, min(count, len(pool)))
-    state[key] = picks
-    state[f"{key}_date"] = today
-    return picks
-
-# ---------------------------------------------------------------------------
-# Persona reply
-# ---------------------------------------------------------------------------
-async def _persona_reply(base_prompt: str, rant: bool = False, timid: bool = True,
-                         state: Dict = None, config: Dict = None, project_progress: Optional[float] = None) -> str:
-    profile = load_will_profile()
-    style = ", ".join(profile.get("style", ["timid", "creative"]))
-    favorites = get_rotating_favorites(state or {}, config or {})
-    personality = profile.get(
-        "core_personality",
-        "Soft-spoken, introspective, and quietly expressive. Enjoys games, art, and quiet company."
-    )
-
-    tangent = ""
-    if rant and favorites:
-        tangent = f" You could ramble about {random.choice(favorites)} for a bit."
-
-    project_phrase = ""
-    if project_progress is not None:
-        project_phrase = f" Also, your current project status: {describe_progress(project_progress)}"
-
-    tone = "hesitant and warm" if timid else "slightly animated and nerdy"
+async def _persona_reply(base_prompt: str, rant: bool=False, timid: bool=True, project_progress: Optional[float]=None) -> str:
+    p = load_profile()
+    style = ", ".join(p.get("style", ["casual", "timid"]))
+    personality = p.get("core_personality")
+    progress_part = f" ({_progress_phrase(project_progress)})" if project_progress is not None else ""
+    tone = "hesitant, soft-spoken" if timid else "surprisingly confident, but brief"
     prompt = (
-        f"You are Will. Personality: {personality}. Speak with a {style} tone, {tone}. "
-        f"{'Allow mild swearing only if natural.'} Keep it human-like — a bit shy, thoughtful, maybe trailing off mid-sentence. "
-        f"{project_phrase}{tangent} {base_prompt}"
+        f"You are Will. Personality: {personality}. Speak {style}; {tone}. "
+        f"Keep it 1–2 sentences, sibling casual. {base_prompt}{progress_part}"
     )
+    return await generate_llm_reply("Will", prompt, None, "sister", [])
 
-    return await generate_llm_reply(
-        sister="Will",
-        user_message=prompt,
-        theme=None,
-        role="sister",
-        history=[],
-    )
+# Outfit logic: masc by default; fem only on bold days
+async def maybe_daily_outfit_post(state, config, sisters):
+    mem = load_memory(); today_s = str(datetime.now().date())
+    if mem.get("last_outfit_day") != today_s:
+        mem["last_outfit_day"]=today_s; mem["outfits_today"]=0
+        # 20% chance he wakes bold today
+        mem["bold_today"] = random.random() < 0.20
+        save_memory(mem)
+    if mem["outfits_today"] > 0 or not generate_and_post_outfit: return
+    try:
+        style_hint = "feminine_default" if mem.get("bold_today") else "masculine_default"
+        await generate_and_post_outfit("Will", state, config, sisters, reason=style_hint)
+        mem["outfits_today"] += 1; save_memory(mem)
+    except Exception as e: log_event(f"[Will][WARN] daily outfit failed: {e}")
 
-# ---------------------------------------------------------------------------
-# Background chatter loop
-# ---------------------------------------------------------------------------
-async def will_chatter_loop(state: Dict, config: Dict, sisters):
+async def maybe_spont_outfit_change(state, config, sisters):
+    mem = load_memory(); today_s = str(datetime.now().date())
+    if mem.get("last_outfit_day") != today_s:
+        mem["last_outfit_day"]=today_s; mem["outfits_today"]=0; mem["bold_today"] = random.random()<0.20; save_memory(mem)
+    if mem["outfits_today"] >= SPONT_OUTFIT_MAX_PER_DAY or not generate_and_post_outfit: return
+    if random.random() < SPONT_OUTFIT_PROB:
+        try:
+            style_hint = "feminine_switch" if mem.get("bold_today") else "masculine_switch"
+            await generate_and_post_outfit("Will", state, config, sisters, reason=style_hint)
+            mem["outfits_today"] += 1; save_memory(mem)
+        except Exception as e: log_event(f"[Will][WARN] spont outfit failed: {e}")
+
+async def will_chatter_loop(state, config, sisters):
     if state.get("will_chatter_started"): return
     state["will_chatter_started"] = True
-
     while True:
-        if is_will_online(state, config):
-            base_p = 0.08
-            if random.random() < base_p:
-                rant_mode = random.random() < RANT_CHANCE
-                timid_mode = random.random() < TIMID_BASE_PROB
-                progress = state.get("Will_project_progress", random.random())
+        if is_online(state, config):
+            await maybe_daily_outfit_post(state, config, sisters)
+            if random.random() < SPONT_CHAT_BASE:
+                timid_mode = random.random() > 0.25
                 try:
-                    msg = await _persona_reply(
-                        "Say something low-key or thoughtful to the group chat.",
-                        rant=rant_mode,
-                        timid=timid_mode,
-                        state=state,
-                        config=config,
-                        project_progress=progress,
-                    )
+                    msg = await _persona_reply("Drop a shy sibling comment (or a quick brave burst if it fits).",
+                                               timid=timid_mode,
+                                               project_progress=state.get("Will_project_progress", random.random()))
                     if msg:
                         for bot in sisters:
-                            if bot.sister_info["name"] == "Will" and bot.is_ready():
+                            if bot.is_ready() and bot.sister_info["name"] == "Will":
                                 ch = bot.get_channel(config["family_group_channel"])
-                                if ch:
-                                    await ch.send(msg)
-                                    log_event(f"[CHATTER] Will: {msg}")
-                except Exception as e:
-                    log_event(f"[ERROR] Will chatter: {e}")
-        await asyncio.sleep(random.randint(WILL_MIN_SLEEP, WILL_MAX_SLEEP))
+                                if ch: await ch.send(msg); log_event(f"[Will][CHAT] {msg}")
+                except Exception as e: log_event(f"[Will][ERR] chatter: {e}")
+            await maybe_spont_outfit_change(state, config, sisters)
+        await asyncio.sleep(random.randint(MIN_SLEEP, MAX_SLEEP))
 
-# ---------------------------------------------------------------------------
-# Reactive message handler
-# ---------------------------------------------------------------------------
-def _topic_match_score(content: str, keywords: List[str]) -> float:
-    if not content or not keywords:
-        return 0.0
-    text = content.lower()
-    return sum(1.0 for kw in keywords if kw.lower() in text)
-
-
-async def will_handle_message(state: Dict, config: Dict, sisters, author: str, content: str, channel_id: int):
-    if not is_will_online(state, config): return
-
-    profile = load_will_profile()
-    interest_score = _topic_match_score(content, profile.get("interests", []))
-    trigger_score = _topic_match_score(content, profile.get("favorites", []))
-
-    p = 0.15 + (interest_score * INTEREST_HIT_BOOST) + (trigger_score * 0.15)
-    if author == "Ivy": p += IVY_BOOST
-    p = min(p, 0.9)
-
-    if "will" in content.lower(): p = 1.0
-    if random.random() >= p: return
-
-    rant_mode = random.random() < RANT_CHANCE
-    timid_mode = random.random() < TIMID_BASE_PROB
-    progress = state.get("Will_project_progress", random.random())
-
+async def will_handle_message(state, config, sisters, author, content, channel_id):
+    if not is_online(state, config): return
+    chance = 0.14
+    if "ivy" in author.lower():  # Ivy boosts his talkativeness
+        chance += 0.25
+    if "will" in content.lower() and MENTION_FORCE:
+        chance = 1.0
+    if random.random() >= min(0.9, chance): return
+    timid_mode = random.random() > 0.25
     try:
-        reply = await _persona_reply(
-            f"{author} said: \"{content}\" — respond naturally, shy but engaged, as Will would.",
-            rant=rant_mode,
-            timid=timid_mode,
-            state=state,
-            config=config,
-            project_progress=progress,
-        )
+        reply = await _persona_reply(f'{author} said: "{content}". Reply like Will — shy, kind.',
+                                     timid=timid_mode,
+                                     project_progress=state.get("Will_project_progress", random.random()))
         if reply:
             for bot in sisters:
                 if bot.is_ready() and bot.sister_info["name"] == "Will":
                     ch = bot.get_channel(config["family_group_channel"])
-                    if ch:
-                        await ch.send(reply)
-                        log_event(f"[REPLY] Will → {author}: {reply}")
-    except Exception as e:
-        log_event(f"[ERROR] Will reactive: {e}")
+                    if ch: await ch.send(reply); log_event(f"[Will][REPLY] to {author}: {reply}")
+    except Exception as e: log_event(f"[Will][ERR] reactive: {e}")
 
-# ---------------------------------------------------------------------------
-# Startup
-# ---------------------------------------------------------------------------
-def ensure_will_systems(state: Dict, config: Dict, sisters):
-    assign_will_schedule(state, config)
+def ensure_will_systems(state, config, sisters):
+    assign_schedule(state, config)
     if not state.get("will_chatter_started"):
         asyncio.create_task(will_chatter_loop(state, config, sisters))
