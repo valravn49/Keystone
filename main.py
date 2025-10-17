@@ -19,7 +19,7 @@ from image_utils import generate_and_post_daily_outfits
 # Import behavior modules
 from Autonomy.behaviors.aria_behavior import ensure_aria_systems, aria_handle_message
 from Autonomy.behaviors.selene_behavior import ensure_selene_systems, selene_handle_message
-from Autonomy.behaviors.cassandra_behavior import ensure_cassandra_systems, cassandra_handle_message
+from Autonomy.behaviors.cassandra_behavior import ensure_cass_systems, cassandra_handle_message
 from Autonomy.behaviors.ivy_behavior import ensure_ivy_systems, ivy_handle_message
 from Autonomy.behaviors.will_behavior import ensure_will_systems, will_handle_message
 
