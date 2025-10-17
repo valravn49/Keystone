@@ -1,101 +1,139 @@
-import os
-import json
-import random
-import asyncio
+import os, json, random, asyncio
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, List
+
 from llm import generate_llm_reply
 from logger import log_event
 
-IVY_PERSONALITY_JSON = "/Autonomy/personalities/Ivy_Personality.json"
-IVY_MEMORY_JSON = "/Autonomy/memory/Ivy_Memory.json"
+try:
+    from image_utils import generate_and_post_outfit
+except Exception:
+    generate_and_post_outfit = None
 
-IVY_MIN_SLEEP = 30 * 60
-IVY_MAX_SLEEP = 70 * 60
+PERSONALITY_JSON = "/Autonomy/personalities/Ivy_Personality.json"
+MEMORY_JSON      = "/Autonomy/memory/Ivy_Memory.json"
 
-CHAOTIC_COMMENT_CHANCE = 0.4
-FLIRTY_COMMENT_CHANCE = 0.2
+MIN_SLEEP = 45 * 60
+MAX_SLEEP = 110 * 60
+SPONT_OUTFIT_MAX_PER_DAY = 1
+SPONT_OUTFIT_PROB = 0.12  # Ivy changes fits a bit more often (still capped)
+SPONT_CHAT_BASE = 0.16
+MENTION_FORCE = True
 
-def _load_json(path, default): 
+def _load_json(p, d):
     try:
-        if os.path.exists(path): 
-            with open(path, "r", encoding="utf-8") as f: 
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
                 return json.load(f)
-    except Exception as e: log_event(f"[WARN] Ivy JSON read failed {path}: {e}")
-    return default
+    except Exception as e:
+        log_event(f"[Ivy][WARN] read {p} failed: {e}")
+    return d
 
-def load_ivy_profile(): return _load_json(IVY_PERSONALITY_JSON, {})
-def load_ivy_memory(): return _load_json(IVY_MEMORY_JSON, {"projects": {}, "recent_notes": []})
-def save_ivy_memory(mem):
+def _save_json(p, data):
     try:
-        os.makedirs(os.path.dirname(IVY_MEMORY_JSON), exist_ok=True)
-        with open(IVY_MEMORY_JSON, "w", encoding="utf-8") as f: json.dump(mem, f, ensure_ascii=False, indent=2)
-    except Exception as e: log_event(f"[WARN] Ivy memory write failed: {e}")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log_event(f"[Ivy][WARN] write {p} failed: {e}")
 
-def assign_ivy_schedule(state, config):
+def load_profile() -> Dict:
+    d = _load_json(PERSONALITY_JSON, {})
+    d.setdefault("core_personality", "Flirty gremlin energy; fashionista AND grease-monkey curiosity.")
+    d.setdefault("likes", ["styling", "banter", "tinkering", "VR", "music videos"])
+    d.setdefault("style", ["playful", "teasy", "affectionate"])
+    return d
+
+def load_memory() -> Dict:
+    return _load_json(MEMORY_JSON, {"projects": {}, "recent_notes": [], "outfits_today": 0, "last_outfit_day": None})
+
+def save_memory(mem: Dict): _save_json(MEMORY_JSON, mem)
+
+def _hour_in_range(now_h: int, start: int, end: int) -> bool:
+    if start == end: return True
+    if start < end:  return start <= now_h < end
+    return now_h >= start or now_h < end
+
+def _pick_hour(span: List[int]) -> int:
+    lo, hi = int(span[0]), int(span[1])
+    if hi >= lo: return random.randint(lo, hi)
+    return random.randint(lo, 23) if random.random() < (24 - lo)/(24 - lo + hi + 1e-9) else random.randint(0, hi)
+
+def assign_schedule(state: Dict, config: Dict):
     today = datetime.now().date()
-    key = "ivy_schedule"
-    kd = f"{key}_date"
+    key, kd = "ivy_schedule", "ivy_schedule_date"
     if state.get(kd) == today and key in state: return state[key]
-    scfg = (config.get("schedules", {}) or {}).get("Ivy", {"wake": [9, 11], "sleep": [1, 3]})
-    def pick(span): return random.randint(int(span[0]), int(span[1]))
-    schedule = {"wake": pick(scfg["wake"]), "sleep": pick(scfg["sleep"])}
-    state[key] = schedule; state[kd] = today
-    return schedule
+    scfg = (config.get("schedules", {}) or {}).get("Ivy", {"wake": [8, 10], "sleep": [0, 2]})
+    sch = {"wake": _pick_hour(scfg["wake"]), "sleep": _pick_hour(scfg["sleep"])}
+    state[key] = sch; state[kd] = today; return sch
 
-def is_ivy_online(state, config):
-    sc = assign_ivy_schedule(state, config)
-    now_h = datetime.now().hour
-    wake, sleep = sc["wake"], sc["sleep"]
-    return wake <= now_h or now_h < sleep
+def is_online(state: Dict, config: Dict) -> bool:
+    sc = assign_schedule(state, config)
+    return _hour_in_range(datetime.now().hour, sc["wake"], sc["sleep"])
 
-async def _persona_reply(base_prompt, chaotic=False, flirty=False, state=None, config=None, project_progress=None):
-    profile = load_ivy_profile()
-    tone = "playful and teasing" if flirty else ("chaotic, expressive" if chaotic else "bright and casual")
-    personality = profile.get("core_personality", "Playful, creative, and impulsive but clever.")
-    project_phrase = ""
-    if project_progress is not None:
-        if project_progress < 0.4: project_phrase = " My latest DIY project exploded in glitter. Oops."
-        elif project_progress < 0.8: project_phrase = " The closet restyle’s messy but starting to make sense."
-        else: project_phrase = " Done. Sparkly chaos successfully organized."
-    prompt = f"You are Ivy. Personality: {personality}. Speak in a {tone} tone, short and animated.{project_phrase} {base_prompt}"
-    return await generate_llm_reply(sister="Ivy", user_message=prompt, theme=None, role="sister", history=[])
+async def _persona_reply(base_prompt: str, bratty: bool = False) -> str:
+    p = load_profile()
+    tone = "bratty-cute, overtly teasy" if bratty else "playful, warm teasing"
+    prompt = (
+        f"You are Ivy. Personality: {p.get('core_personality')}. "
+        f"Speak quick, vivid, {tone}. Keep it 1–2 sentences, sibling banter. {base_prompt}"
+    )
+    return await generate_llm_reply("Ivy", prompt, None, "sister", [])
+
+async def maybe_daily_outfit_post(state, config, sisters):
+    mem = load_memory(); today_s = str(datetime.now().date())
+    if mem.get("last_outfit_day") != today_s: mem["last_outfit_day"]=today_s; mem["outfits_today"]=0
+    if mem["outfits_today"] > 0 or not generate_and_post_outfit: return
+    try:
+        await generate_and_post_outfit("Ivy", state, config, sisters, reason="daily_wake")
+        mem["outfits_today"] += 1; save_memory(mem)
+    except Exception as e: log_event(f"[Ivy][WARN] daily outfit failed: {e}")
+
+async def maybe_spont_outfit_change(state, config, sisters):
+    mem = load_memory(); today_s = str(datetime.now().date())
+    if mem.get("last_outfit_day") != today_s: mem["last_outfit_day"]=today_s; mem["outfits_today"]=0
+    if mem["outfits_today"] >= SPONT_OUTFIT_MAX_PER_DAY or not generate_and_post_outfit: return
+    if random.random() < SPONT_OUTFIT_PROB:
+        try:
+            await generate_and_post_outfit("Ivy", state, config, sisters, reason="midday_adjust")
+            mem["outfits_today"] += 1; save_memory(mem)
+        except Exception as e: log_event(f"[Ivy][WARN] spont outfit failed: {e}")
 
 async def ivy_chatter_loop(state, config, sisters):
     if state.get("ivy_chatter_started"): return
     state["ivy_chatter_started"] = True
     while True:
-        if is_ivy_online(state, config) and random.random() < 0.15:
-            chaotic = random.random() < CHAOTIC_COMMENT_CHANCE
-            flirty = random.random() < FLIRTY_COMMENT_CHANCE
-            progress = state.get("Ivy_project_progress", random.random())
-            msg = await _persona_reply("Say something spontaneous and fun to the group chat.", chaotic, flirty, state, config, progress)
-            if msg:
-                for bot in sisters:
-                    if bot.sister_info["name"] == "Ivy" and bot.is_ready():
-                        ch = bot.get_channel(config["family_group_channel"])
-                        if ch:
-                            await ch.send(msg)
-                            log_event(f"[CHATTER] Ivy: {msg}")
-        await asyncio.sleep(random.randint(IVY_MIN_SLEEP, IVY_MAX_SLEEP))
+        if is_online(state, config):
+            await maybe_daily_outfit_post(state, config, sisters)
+            if random.random() < SPONT_CHAT_BASE:
+                try:
+                    msg = await _persona_reply("Throw a quick sibling ping — flirty gremlin, but kind.",
+                                               bratty=(random.random()<0.5))
+                    if msg:
+                        for bot in sisters:
+                            if bot.is_ready() and bot.sister_info["name"] == "Ivy":
+                                ch = bot.get_channel(config["family_group_channel"])
+                                if ch: await ch.send(msg); log_event(f"[Ivy][CHAT] {msg}")
+                except Exception as e: log_event(f"[Ivy][ERR] chatter: {e}")
+            await maybe_spont_outfit_change(state, config, sisters)
+        await asyncio.sleep(random.randint(MIN_SLEEP, MAX_SLEEP))
 
 async def ivy_handle_message(state, config, sisters, author, content, channel_id):
-    if not is_ivy_online(state, config): return
-    chance = 0.3
-    if "ivy" in content.lower(): chance = 1.0
+    if not is_online(state, config): return
+    chance = 0.28
+    if "ivy" in content.lower() and MENTION_FORCE: chance = 1.0
     if random.random() >= chance: return
-    chaotic = random.random() < 0.5; flirty = random.random() < 0.3
-    progress = state.get("Ivy_project_progress", random.random())
-    reply = await _persona_reply(f"{author} said: \"{content}\" — reply playfully like a younger sibling teasing.", chaotic, flirty, state, config, progress)
-    if reply:
-        for bot in sisters:
-            if bot.is_ready() and bot.sister_info["name"] == "Ivy":
-                ch = bot.get_channel(config["family_group_channel"])
-                if ch:
-                    await ch.send(reply)
-                    log_event(f"[REPLY] Ivy → {author}: {reply}")
+    try:
+        reply = await _persona_reply(f'{author} said: "{content}". Reply playful, teasing, 1–2 lines.',
+                                     bratty=(random.random()<0.6))
+        if reply:
+            for bot in sisters:
+                if bot.is_ready() and bot.sister_info["name"] == "Ivy":
+                    ch = bot.get_channel(config["family_group_channel"])
+                    if ch: await ch.send(reply); log_event(f"[Ivy][REPLY] to {author}: {reply}")
+    except Exception as e: log_event(f"[Ivy][ERR] reactive: {e}")
 
 def ensure_ivy_systems(state, config, sisters):
-    assign_ivy_schedule(state, config)
+    assign_schedule(state, config)
     if not state.get("ivy_chatter_started"):
         asyncio.create_task(ivy_chatter_loop(state, config, sisters))
