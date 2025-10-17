@@ -7,7 +7,7 @@ import pytz
 # Core imports
 # -------------------------------------------------------------------
 from logger import log_event
-from state_manager import state, load_state, save_state
+from Autonomy.state_manager import state, load_state, save_state
 from image_utils import generate_and_post_daily_outfits
 from workouts import get_today_workout
 
@@ -111,7 +111,6 @@ async def scheduler_loop(config, sisters, will_bot):
                 last_spontaneous = now
 
         await asyncio.sleep(60)  # Check every minute
-
 
 # -------------------------------------------------------------------
 # Discord startup
