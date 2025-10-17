@@ -9,7 +9,7 @@ import discord
 from discord.ext import commands, tasks
 from fastapi import FastAPI
 
-# Ensure repo path is visible
+# Make sure the repo path is visible
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 # -------------------------------------------------------------------
@@ -19,15 +19,15 @@ from logger import log_event
 from image_utils import generate_and_post_daily_outfits
 from workouts import get_today_workout
 
-# ✅ Behavior imports (aliased so names match main.py expectations)
-from Autonomy.behaviors.aria_behavior import aria_behavior as handle_aria_behavior
-from Autonomy.behaviors.selene_behavior import selene_behavior as handle_selene_behavior
-from Autonomy.behaviors.cassandra_behavior import cassandra_behavior as handle_cassandra_behavior
-from Autonomy.behaviors.ivy_behavior import ivy_behavior as handle_ivy_behavior
-from Autonomy.behaviors.will_behavior import will_behavior as handle_will_behavior
+# ✅ Behavior imports (matching actual definitions)
+from Autonomy.behaviors.aria_behavior import handle_aria_behavior
+from Autonomy.behaviors.selene_behavior import handle_selene_behavior
+from Autonomy.behaviors.cassandra_behavior import handle_cassandra_behavior
+from Autonomy.behaviors.ivy_behavior import handle_ivy_behavior
+from Autonomy.behaviors.will_behavior import handle_will_behavior
 
 # -------------------------------------------------------------------
-# Config / State
+# Configuration & State
 # -------------------------------------------------------------------
 AEDT = pytz.timezone("Australia/Sydney")
 
@@ -50,10 +50,10 @@ state = {
 }
 
 # -------------------------------------------------------------------
-# Helper Functions
+# Helpers
 # -------------------------------------------------------------------
 def convert_to_aedt_time(hour: int, minute: int = 0) -> datetime.time:
-    """Convert to Sydney local time (AEDT) for scheduling."""
+    """Return an aware AEDT time for scheduling."""
     now = datetime.datetime.now(AEDT)
     local_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     return local_time.timetz()
@@ -114,7 +114,7 @@ async def on_ready():
 
 @sisters[0].event
 async def on_message(message):
-    """Distribute messages to all sibling handlers."""
+    """Handle live sibling interactions."""
     if message.author.bot:
         return
 
@@ -123,7 +123,6 @@ async def on_message(message):
     channel_id = message.channel.id
 
     try:
-        # Each sibling reacts through their behavior logic
         for bot in sisters:
             name = bot.sister_info["name"]
             if name == "Aria":
@@ -167,14 +166,13 @@ async def night_task():
 
 @tasks.loop(minutes=90)
 async def spontaneous_chat():
-    """Periodic sibling chat (ensures at least one response)."""
+    """Casual family chat — ensures at least one sibling replies."""
     rotation = get_today_rotation()
     starter = random.choice(config["rotation"])["name"]
     theme = get_current_theme()
     log_event(f"[SPONTANEOUS] {starter} starts under theme {theme}")
 
     try:
-        # Pick corresponding behavior handler
         handler_map = {
             "Aria": handle_aria_behavior,
             "Selene": handle_selene_behavior,
@@ -185,7 +183,6 @@ async def spontaneous_chat():
         if func:
             await func(state, config, sisters, starter, "spontaneous", 0)
 
-        # Guarantee a sibling responds
         responders = [n for n in ["Aria", "Selene", "Cassandra", "Ivy"] if n != starter]
         responder = random.choice(responders)
         resp_func = handler_map.get(responder)
@@ -196,15 +193,15 @@ async def spontaneous_chat():
 
 @tasks.loop(time=convert_to_aedt_time(3, 0))
 async def nightly_update_task():
-    """Apply organic overnight personality and project drift."""
-    log_event("[SYSTEM] Performing nightly updates for all siblings.")
+    """Apply organic overnight personality & project drift."""
+    log_event("[SYSTEM] Nightly updates for all siblings.")
     try:
         for s in config["rotation"]:
             name = s["name"]
             drift = random.choice([
-                "mild personality drift",
-                "minor project re-prioritization",
-                "mood recalibration",
+                "minor mood recalibration",
+                "new creative spark",
+                "quiet reflection period",
             ])
             log_event(f"[DRIFT] {name}: {drift}")
     except Exception as e:
@@ -233,7 +230,7 @@ async def before_nightly():
 # Startup
 # -------------------------------------------------------------------
 async def run_all():
-    """Start all bots and their schedules."""
+    """Start all bots and background loops."""
     for bot in sisters:
         asyncio.create_task(bot.start(os.getenv(bot.sister_info["env_var"])))
     asyncio.create_task(will_bot.start(os.getenv(will_bot.sister_info["env_var"])))
@@ -243,7 +240,7 @@ async def run_all():
     spontaneous_chat.start()
     nightly_update_task.start()
 
-    log_event("[SYSTEM] All bots and background tasks are live.")
+    log_event("[SYSTEM] All bots and background tasks are running.")
 
 # -------------------------------------------------------------------
 # FastAPI App
@@ -252,11 +249,11 @@ app = FastAPI()
 
 @app.on_event("startup")
 async def startup_event():
-    log_event("[SYSTEM] Starting bot system...")
+    log_event("[SYSTEM] Booting up family network...")
     await run_all()
 
 @app.get("/health")
 async def health():
-    """Health check."""
+    """Health endpoint."""
     now = datetime.datetime.now(AEDT)
     return {"status": "ok", "time": now.strftime("%Y-%m-%d %H:%M:%S %Z")}
