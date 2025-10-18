@@ -1,175 +1,163 @@
 import os, json, random, asyncio
 from datetime import datetime
-from typing import Dict, List, Optional
-
 from llm import generate_llm_reply
 from logger import log_event
 
-try:
-    from image_utils import generate_and_post_outfit
-except Exception:
-    generate_and_post_outfit = None
+WILL_PERSONALITY_JSON = "/Autonomy/personalities/Will_Personality.json"
+WILL_MEMORY_JSON      = "/Autonomy/memory/Will_Memory.json"
 
-PERSONALITY_JSON = "/Autonomy/personalities/Will_Personality.json"
-MEMORY_JSON      = "/Autonomy/memory/Will_Memory.json"
+WILL_MIN_SLEEP = 40 * 60
+WILL_MAX_SLEEP = 100 * 60
 
-MIN_SLEEP = 40 * 60
-MAX_SLEEP = 100 * 60
-SPONT_OUTFIT_MAX_PER_DAY = 1
-SPONT_OUTFIT_PROB = 0.06    # Will changes fit least often (but can!)
-SPONT_CHAT_BASE = 0.10
-MENTION_FORCE = True
-
-# Fallback favs (per your request)
-FALLBACK_FAVS = [
-    "The Legend of Zelda: Tears of the Kingdom", "Final Fantasy XIV", "Hades",
-    "Stardew Valley", "Hollow Knight", "Elden Ring",
-    "Nier: Automata", "Zenless Zone Zero", "Little Nightmares",
-    "VR headsets", "retro game consoles", "PC building",
+# Updated fallbacks (as requested): includes Nier: Automata, Zenless Zone Zero, Little Nightmares
+WILL_FALLBACK_FAVORITES = [
+    "The Legend of Zelda: Tears of the Kingdom",
+    "Final Fantasy XIV",
+    "Hades",
+    "Stardew Valley",
+    "Hollow Knight",
+    "Elden Ring",
+    "Nier: Automata",
+    "Zenless Zone Zero",
+    "Little Nightmares",
+    "VR headsets",
+    "retro game consoles",
+    "PC building",
+    "indie game dev videos",
+    "tech teardown channels",
 ]
 
-def _load_json(p, d):
+def _load_json(path, default):
     try:
-        if os.path.exists(p):
-            with open(p, "r", encoding="utf-8") as f:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
     except Exception as e:
-        log_event(f"[Will][WARN] read {p} failed: {e}")
-    return d
+        log_event(f"[WARN] Will JSON read failed: {e}")
+    return default
 
-def _save_json(p, data):
-    try:
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        log_event(f"[Will][WARN] write {p} failed: {e}")
-
-def load_profile() -> Dict:
-    d = _load_json(PERSONALITY_JSON, {})
-    d.setdefault("core_personality", "Shy, nerdy, hesitant; brief bursts of boldness.")
-    d.setdefault("likes", ["tech", "games", "anime", "music"])
-    d.setdefault("style", ["casual", "timid", "sometimes playful"])
-    d.setdefault("favorites", FALLBACK_FAVS)
-    return d
-
-def load_memory() -> Dict:
-    return _load_json(MEMORY_JSON, {
-        "projects": {}, "recent_notes": [], "outfits_today": 0, "last_outfit_day": None,
-        "bold_today": False
+def load_will_profile():
+    # Will = shy/nerdy; on bold days leans femme. Keep tone gentle.
+    return _load_json(WILL_PERSONALITY_JSON, {
+        "interests": ["tech", "games", "anime", "music"],
+        "style": ["casual", "timid", "sometimes playful"],
+        "favorites": WILL_FALLBACK_FAVORITES
     })
 
-def save_memory(mem: Dict): _save_json(MEMORY_JSON, mem)
+def load_will_memory():
+    mem = _load_json(WILL_MEMORY_JSON, {"projects": {}, "recent_notes": []})
+    mem.setdefault("projects", {})
+    mem.setdefault("recent_notes", [])
+    return mem
 
-def _hour_in_range(now_h: int, start: int, end: int) -> bool:
-    if start == end: return True
-    if start < end:  return start <= now_h < end
-    return now_h >= start or now_h < end
+def save_will_memory(mem):
+    try:
+        os.makedirs(os.path.dirname(WILL_MEMORY_JSON), exist_ok=True)
+        with open(WILL_MEMORY_JSON, "w", encoding="utf-8") as f:
+            json.dump(mem, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log_event(f"[WARN] Will memory write failed: {e}")
 
-def _pick_hour(span: List[int]) -> int:
+# ------------------ SCHEDULE ------------------
+
+def _pick_range(span):
     lo, hi = int(span[0]), int(span[1])
-    if hi >= lo: return random.randint(lo, hi)
-    return random.randint(lo, 23) if random.random() < (24 - lo)/(24 - lo + hi + 1e-9) else random.randint(0, hi)
+    if hi < lo: lo, hi = hi, lo
+    return random.randint(lo, hi)
 
-def assign_schedule(state: Dict, config: Dict):
+def assign_will_schedule(state, config):
     today = datetime.now().date()
     key, kd = "will_schedule", "will_schedule_date"
     if state.get(kd) == today and key in state: return state[key]
     scfg = (config.get("schedules", {}) or {}).get("Will", {"wake": [10, 12], "sleep": [0, 2]})
-    sch = {"wake": _pick_hour(scfg["wake"]), "sleep": _pick_hour(scfg["sleep"])}
-    state[key] = sch; state[kd] = today; return sch
+    state[key] = {"wake": _pick_range(scfg["wake"]), "sleep": _pick_range(scfg["sleep"])}
+    state[kd] = today
+    return state[key]
 
-def is_online(state: Dict, config: Dict) -> bool:
-    sc = assign_schedule(state, config)
+def _hour_in_range(now, wake, sleep):
+    return True if wake == sleep else (wake <= now < sleep if wake < sleep else now >= wake or now < sleep)
+
+def is_will_online(state, config):
+    sc = assign_will_schedule(state, config)
     return _hour_in_range(datetime.now().hour, sc["wake"], sc["sleep"])
 
-def _progress_phrase(progress: float) -> str:
-    if progress >= 1.0: return "I actually finished it — quietly proud."
-    if progress >= 0.7: return "Almost done, just polishing the last bits."
-    if progress >= 0.4: return "Midway… second-guessing, but it’s moving."
-    return "Just started — barely anything to show yet."
+# ------------------ CHATTY MODES ------------------
 
-async def _persona_reply(base_prompt: str, rant: bool=False, timid: bool=True, project_progress: Optional[float]=None) -> str:
-    p = load_profile()
-    style = ", ".join(p.get("style", ["casual", "timid"]))
-    personality = p.get("core_personality")
-    progress_part = f" ({_progress_phrase(project_progress)})" if project_progress is not None else ""
-    tone = "hesitant, soft-spoken" if timid else "surprisingly confident, but brief"
-    prompt = (
-        f"You are Will. Personality: {personality}. Speak {style}; {tone}. "
-        f"Keep it 1–2 sentences, sibling casual. {base_prompt}{progress_part}"
-    )
-    return await generate_llm_reply("Will", prompt, None, "sister", [])
+WILL_MODES = ["timid", "soft-playful", "brief-rant", "nostalgic"]
 
-# Outfit logic: masc by default; fem only on bold days
-async def maybe_daily_outfit_post(state, config, sisters):
-    mem = load_memory(); today_s = str(datetime.now().date())
-    if mem.get("last_outfit_day") != today_s:
-        mem["last_outfit_day"]=today_s; mem["outfits_today"]=0
-        # 20% chance he wakes bold today
-        mem["bold_today"] = random.random() < 0.20
-        save_memory(mem)
-    if mem["outfits_today"] > 0 or not generate_and_post_outfit: return
-    try:
-        style_hint = "feminine_default" if mem.get("bold_today") else "masculine_default"
-        await generate_and_post_outfit("Will", state, config, sisters, reason=style_hint)
-        mem["outfits_today"] += 1; save_memory(mem)
-    except Exception as e: log_event(f"[Will][WARN] daily outfit failed: {e}")
-
-async def maybe_spont_outfit_change(state, config, sisters):
-    mem = load_memory(); today_s = str(datetime.now().date())
-    if mem.get("last_outfit_day") != today_s:
-        mem["last_outfit_day"]=today_s; mem["outfits_today"]=0; mem["bold_today"] = random.random()<0.20; save_memory(mem)
-    if mem["outfits_today"] >= SPONT_OUTFIT_MAX_PER_DAY or not generate_and_post_outfit: return
-    if random.random() < SPONT_OUTFIT_PROB:
-        try:
-            style_hint = "feminine_switch" if mem.get("bold_today") else "masculine_switch"
-            await generate_and_post_outfit("Will", state, config, sisters, reason=style_hint)
-            mem["outfits_today"] += 1; save_memory(mem)
-        except Exception as e: log_event(f"[Will][WARN] spont outfit failed: {e}")
+def _favorites_today(state):
+    today = datetime.now().date()
+    key, kd = "will_favs_today", "will_favs_date"
+    if state.get(kd) == today and key in state:
+        return state[key]
+    favs = load_will_profile().get("favorites", WILL_FALLBACK_FAVORITES)
+    picks = random.sample(favs, min(3, len(favs)))
+    state[key], state[kd] = picks, today
+    return picks
 
 async def will_chatter_loop(state, config, sisters):
     if state.get("will_chatter_started"): return
     state["will_chatter_started"] = True
     while True:
-        if is_online(state, config):
-            await maybe_daily_outfit_post(state, config, sisters)
-            if random.random() < SPONT_CHAT_BASE:
-                timid_mode = random.random() > 0.25
-                try:
-                    msg = await _persona_reply("Drop a shy sibling comment (or a quick brave burst if it fits).",
-                                               timid=timid_mode,
-                                               project_progress=state.get("Will_project_progress", random.random()))
-                    if msg:
-                        for bot in sisters:
-                            if bot.is_ready() and bot.sister_info["name"] == "Will":
-                                ch = bot.get_channel(config["family_group_channel"])
-                                if ch: await ch.send(msg); log_event(f"[Will][CHAT] {msg}")
-                except Exception as e: log_event(f"[Will][ERR] chatter: {e}")
-            await maybe_spont_outfit_change(state, config, sisters)
-        await asyncio.sleep(random.randint(MIN_SLEEP, MAX_SLEEP))
+        if is_will_online(state, config) and random.random() < 0.10:
+            recent = [m for m in state.get("recent_messages", []) if m["author"] != "Will"][-4:]
+            context = " ".join([f'{m["author"]}: "{m["content"]}"' for m in recent]) or "Quiet room."
+            mode = random.choices(WILL_MODES, weights=[50, 25, 15, 10], k=1)[0]
+            progress = state.get("Will_project_progress", random.random())
+            fav_hint = random.choice(_favorites_today(state))
+            base = (
+                f"Family context: {context}\nSpeak as Will in {mode} mode—shy by default, warm, concise. "
+                f"2 short sentences. If natural, hint at {fav_hint} or your current project (~{int(progress*100)}%)."
+            )
+            try:
+                msg = await generate_llm_reply("Will", base, theme=None, role="sister", history=[])
+                if msg:
+                    for bot in sisters:
+                        if bot.sister_info["name"] == "Will" and bot.is_ready():
+                            ch = bot.get_channel(config["family_group_channel"])
+                            if ch:
+                                await ch.send(msg)
+                                log_event(f"[WILL CHATTER] {msg}")
+                                state.setdefault("recent_messages", []).append({"author":"Will","content":msg})
+                                state["recent_messages"] = state["recent_messages"][-25:]
+            except Exception as e:
+                log_event(f"[ERROR] Will chatter: {e}")
+        await asyncio.sleep(random.randint(WILL_MIN_SLEEP, WILL_MAX_SLEEP))
 
 async def will_handle_message(state, config, sisters, author, content, channel_id):
-    if not is_online(state, config): return
-    chance = 0.14
-    if "ivy" in author.lower():  # Ivy boosts his talkativeness
-        chance += 0.25
-    if "will" in content.lower() and MENTION_FORCE:
-        chance = 1.0
-    if random.random() >= min(0.9, chance): return
-    timid_mode = random.random() > 0.25
+    if not is_will_online(state, config): return
+    mentioned = "will" in content.lower()
+    interests = load_will_profile().get("interests", [])
+    p = 0.12 + 0.10 * sum(1 for kw in interests if kw.lower() in content.lower())
+    if author == "Ivy": p += 0.25
+    if mentioned: p = 1.0
+    if random.random() >= min(0.95, p): return
+
+    recent = [m for m in state.get("recent_messages", []) if m["author"] != "Will"][-3:]
+    context = " ".join([f'{m["author"]}: "{m["content"]}"' for m in recent])
+    mode = random.choices(WILL_MODES, weights=[60, 20, 10, 10], k=1)[0]
+    progress = state.get("Will_project_progress", random.random())
+    fav_hint = random.choice(_favorites_today(state))
+    prompt = (
+        f"Family context: {context}\n{author} said: \"{content}\".\n"
+        f"As Will in {mode} mode—short, shy, a touch playful. 1–2 sentences. "
+        f"If it fits, nod to {fav_hint} or project (~{int(progress*100)}%)."
+    )
     try:
-        reply = await _persona_reply(f'{author} said: "{content}". Reply like Will — shy, kind.',
-                                     timid=timid_mode,
-                                     project_progress=state.get("Will_project_progress", random.random()))
+        reply = await generate_llm_reply("Will", prompt, theme=None, role="sister", history=[])
         if reply:
             for bot in sisters:
                 if bot.is_ready() and bot.sister_info["name"] == "Will":
                     ch = bot.get_channel(config["family_group_channel"])
-                    if ch: await ch.send(reply); log_event(f"[Will][REPLY] to {author}: {reply}")
-    except Exception as e: log_event(f"[Will][ERR] reactive: {e}")
+                    if ch:
+                        await ch.send(reply)
+                        log_event(f"[WILL REPLY] → {author}: {reply}")
+                        state.setdefault("recent_messages", []).append({"author":"Will","content":reply})
+                        state["recent_messages"] = state["recent_messages"][-25:]
+    except Exception as e:
+        log_event(f"[ERROR] Will reactive: {e}")
 
 def ensure_will_systems(state, config, sisters):
-    assign_schedule(state, config)
+    assign_will_schedule(state, config)
     if not state.get("will_chatter_started"):
         asyncio.create_task(will_chatter_loop(state, config, sisters))
