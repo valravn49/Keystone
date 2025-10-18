@@ -94,7 +94,7 @@ async def cassandra_chatter_loop(state, config, sisters):
                 log_event(f"[ERROR] Cassandra chatter: {e}")
         await asyncio.sleep(random.randint(CASS_MIN_SLEEP, CASS_MAX_SLEEP))
 
-async def cassandra_handle_message(state, config, sisters, author, content, channel_id):
+async def cass_handle_message(state, config, sisters, author, content, channel_id):
     if not is_cassandra_online(state, config): return
     mentioned = "cassandra" in content.lower() or "cass" in content.lower()
     p = 0.22 + 0.10 * sum(1 for kw in load_cass_profile().get("interests", []) if kw.lower() in content.lower())
@@ -124,7 +124,7 @@ async def cassandra_handle_message(state, config, sisters, author, content, chan
     except Exception as e:
         log_event(f"[ERROR] Cassandra reactive: {e}")
 
-def ensure_cassandra_systems(state, config, sisters):
+def ensure_cass_systems(state, config, sisters):
     assign_cass_schedule(state, config)
     if not state.get("cassandra_chatter_started"):
         asyncio.create_task(cassandra_chatter_loop(state, config, sisters))
