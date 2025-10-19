@@ -20,8 +20,8 @@ from Autonomy.behaviors.selene_behavior import (
     is_selene_online,
 )
 from Autonomy.behaviors.cassandra_behavior import (
-    cassandra_handle_message,
-    ensure_cassandra_systems,
+    cass_handle_message,
+    ensure_cass_systems,
     is_cassandra_online,
 )
 from Autonomy.behaviors.ivy_behavior import (
