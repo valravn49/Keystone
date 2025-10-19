@@ -2,143 +2,250 @@ import os
 import json
 import random
 import asyncio
-from datetime import datetime
+import datetime
 import pytz
-
 import discord
 from discord.ext import commands, tasks
 from fastapi import FastAPI
 
-# -------------------------------
-# Local imports
-# -------------------------------
-from Autonomy.state_manager import state, load_state, save_state
+# === Behavior Imports ===
+from Autonomy.behaviors.aria_behavior import (
+    aria_handle_message,
+    ensure_aria_systems,
+    is_aria_online,
+)
+from Autonomy.behaviors.selene_behavior import (
+    selene_handle_message,
+    ensure_selene_systems,
+    is_selene_online,
+)
+from Autonomy.behaviors.cassandra_behavior import (
+    cassandra_handle_message,
+    ensure_cassandra_systems,
+    is_cassandra_online,
+)
+from Autonomy.behaviors.ivy_behavior import (
+    ivy_handle_message,
+    ensure_ivy_systems,
+    is_ivy_online,
+)
+from Autonomy.behaviors.will_behavior import (
+    will_handle_message,
+    ensure_will_systems,
+    is_will_online,
+)
+
+# === Shared ===
 from logger import log_event
+from workouts import get_today_workout
 from image_utils import generate_and_post_daily_outfits
+from sisters_behavior import send_morning_message, send_night_message, get_today_rotation
 
-# Import behavior modules
-from Autonomy.behaviors.aria_behavior import ensure_aria_systems, aria_handle_message
-from Autonomy.behaviors.selene_behavior import ensure_selene_systems, selene_handle_message
-from Autonomy.behaviors.cassandra_behavior import ensure_cass_systems, cass_handle_message
-from Autonomy.behaviors.ivy_behavior import ensure_ivy_systems, ivy_handle_message
-from Autonomy.behaviors.will_behavior import ensure_will_systems, will_handle_message
+# === State ===
+from Autonomy.state_manager import state, save_state, load_state
 
-# -------------------------------
-# Load config
-# -------------------------------
+# ---------------------------------------------------------------------------
+# FastAPI App
+# ---------------------------------------------------------------------------
+app = FastAPI()
+
+# ---------------------------------------------------------------------------
+# Discord Setup
+# ---------------------------------------------------------------------------
 with open("config.json", "r", encoding="utf-8") as f:
     config = json.load(f)
 
-# Timezone for all scheduled tasks (Australian Eastern Daylight Time)
-AEDT = pytz.timezone("Australia/Sydney")
-
-# Discord Intents
 intents = discord.Intents.default()
-intents.message_content = True
+intents.messages = True
 intents.guilds = True
+intents.message_content = True
 
-# -------------------------------
-# Sister bot class
-# -------------------------------
 class SisterBot(commands.Bot):
     def __init__(self, sister_info):
         super().__init__(command_prefix="!", intents=intents)
         self.sister_info = sister_info
 
-# Create bot instances for all sisters
 sisters = [SisterBot(s) for s in config["rotation"]]
 
-# -------------------------------
-# Bot Events
-# -------------------------------
-@sisters[0].event
-async def on_ready():
-    log_event("🌙 All sisters online.")
-    for bot in sisters:
-        if bot.user:
-            log_event(f"{bot.sister_info['name']} logged in as {bot.user}")
-    log_event("All systems running.")
+# ---------------------------------------------------------------------------
+# Time Conversion for AEDT (Australian Eastern Daylight Time)
+# ---------------------------------------------------------------------------
+AEDT = pytz.timezone("Australia/Sydney")
 
-@sisters[0].event
-async def on_message(message):
-    if message.author.bot:
-        return
+def converted_time(hour: int, minute: int = 0) -> datetime.time:
+    now = datetime.datetime.now(AEDT)
+    local_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return local_time.timetz()
 
-    author = str(message.author)
-    content = message.content
-    channel_id = message.channel.id
-
-    # Route message to handlers
-    await aria_handle_message(state, config, sisters, author, content, channel_id)
-    await selene_handle_message(state, config, sisters, author, content, channel_id)
-    await cassandra_handle_message(state, config, sisters, author, content, channel_id)
-    await ivy_handle_message(state, config, sisters, author, content, channel_id)
-    await will_handle_message(state, config, sisters, author, content, channel_id)
-
-# -------------------------------
-# Task Scheduling
-# -------------------------------
-def aedt_time(hour: int, minute: int = 0):
-    """Return a timezone-aware datetime.time in AEDT."""
-    now = datetime.now(AEDT)
-    return now.replace(hour=hour, minute=minute, second=0, microsecond=0).timetz()
-
-@tasks.loop(time=aedt_time(6, 0))
-async def morning_task():
-    log_event("☀️ Morning ritual started.")
-    await generate_and_post_daily_outfits(sisters, config)
-    save_state(state)
-
-@tasks.loop(time=aedt_time(22, 0))
-async def night_task():
-    log_event("🌙 Night ritual started.")
-    save_state(state)
-
-# -------------------------------
-# System Startup
-# -------------------------------
-async def start_family(config, sisters):
-    """Start all bots, systems, and tasks."""
-    load_state()
-
-    # Start chatter systems
+# ---------------------------------------------------------------------------
+# Family System Startup
+# ---------------------------------------------------------------------------
+async def start_family():
+    """Initialize all siblings and systems."""
     ensure_aria_systems(state, config, sisters)
     ensure_selene_systems(state, config, sisters)
-    ensure_cass_systems(state, config, sisters)
+    ensure_cassandra_systems(state, config, sisters)
     ensure_ivy_systems(state, config, sisters)
     ensure_will_systems(state, config, sisters)
 
-    # Start Discord bots
+    log_event("[SYSTEM] Family startup complete.")
+
+# ---------------------------------------------------------------------------
+# Morning Ritual — Multi-turn Sibling Conversation
+# ---------------------------------------------------------------------------
+@tasks.loop(time=converted_time(6, 0))
+async def morning_task():
+    await send_morning_message(state, config, sisters)
+    await asyncio.sleep(random.uniform(6, 12))
+
+    rotation = get_today_rotation(state, config)
+    lead = rotation["lead"]
+    channel_id = config["family_group_channel"]
+
+    lead_msg = state.get("last_morning_message", f"Morning message by {lead}")
+
+    # Online checks and message handlers
+    online_checks = {
+        "Aria": is_aria_online,
+        "Selene": is_selene_online,
+        "Cassandra": is_cassandra_online,
+        "Ivy": is_ivy_online,
+        "Will": is_will_online,
+    }
+    handlers = {
+        "Aria": aria_handle_message,
+        "Selene": selene_handle_message,
+        "Cassandra": cassandra_handle_message,
+        "Ivy": ivy_handle_message,
+        "Will": will_handle_message,
+    }
+
+    # Phase 1: everyone replies to the lead
+    repliers = []
+    for bot in sisters:
+        name = bot.sister_info["name"]
+        if name == lead:
+            continue
+        check_func = online_checks.get(name)
+        if check_func and check_func(state, config) and random.random() < 0.85:
+            try:
+                await handlers[name](state, config, sisters, author=lead, content=lead_msg, channel_id=channel_id)
+                repliers.append(name)
+                await asyncio.sleep(random.uniform(4, 10))
+            except Exception as e:
+                log_event(f"[ERROR] {name} morning reply failed: {e}")
+
+    # Phase 2: cross-chat between siblings
+    if repliers:
+        for name in repliers:
+            others = [r for r in repliers if r != name]
+            if not others:
+                continue
+            target = random.choice(others)
+            if random.random() < 0.5:
+                try:
+                    content = f"{target} joined the morning chat."
+                    await handlers[name](state, config, sisters, author=target, content=content, channel_id=channel_id)
+                    await asyncio.sleep(random.uniform(3, 8))
+                except Exception as e:
+                    log_event(f"[ERROR] Morning cross-chat failed ({name} ↔ {target}): {e}")
+
+    log_event("[SYSTEM] Morning conversation complete — siblings interacted.")
+
+# ---------------------------------------------------------------------------
+# Night Ritual — Multi-turn Sibling Reflection
+# ---------------------------------------------------------------------------
+@tasks.loop(time=converted_time(22, 0))
+async def night_task():
+    await send_night_message(state, config, sisters)
+    await asyncio.sleep(random.uniform(8, 14))
+
+    rotation = get_today_rotation(state, config)
+    lead = rotation["lead"]
+    channel_id = config["family_group_channel"]
+
+    lead_msg = state.get("last_night_message", f"Night reflection by {lead}")
+
+    online_checks = {
+        "Aria": is_aria_online,
+        "Selene": is_selene_online,
+        "Cassandra": is_cassandra_online,
+        "Ivy": is_ivy_online,
+        "Will": is_will_online,
+    }
+    handlers = {
+        "Aria": aria_handle_message,
+        "Selene": selene_handle_message,
+        "Cassandra": cassandra_handle_message,
+        "Ivy": ivy_handle_message,
+        "Will": will_handle_message,
+    }
+
+    repliers = []
+    for bot in sisters:
+        name = bot.sister_info["name"]
+        if name == lead:
+            continue
+        check_func = online_checks.get(name)
+        if check_func and check_func(state, config) and random.random() < 0.75:
+            try:
+                await handlers[name](state, config, sisters, author=lead, content=lead_msg, channel_id=channel_id)
+                repliers.append(name)
+                await asyncio.sleep(random.uniform(6, 14))
+            except Exception as e:
+                log_event(f"[ERROR] {name} night reply failed: {e}")
+
+    # Cross-chat (soft tone)
+    if repliers:
+        for name in repliers:
+            others = [r for r in repliers if r != name]
+            if not others:
+                continue
+            target = random.choice(others)
+            if random.random() < 0.4:
+                try:
+                    content = f"{target} mentioned something before sleep."
+                    await handlers[name](state, config, sisters, author=target, content=content, channel_id=channel_id)
+                    await asyncio.sleep(random.uniform(6, 12))
+                except Exception as e:
+                    log_event(f"[ERROR] Night cross-chat failed ({name} ↔ {target}): {e}")
+
+    log_event("[SYSTEM] Night reflection complete — family shared final thoughts.")
+
+# ---------------------------------------------------------------------------
+# Outfit Generator (Daily)
+# ---------------------------------------------------------------------------
+@tasks.loop(time=converted_time(7, 30))
+async def outfit_task():
+    """Generate and post daily outfit renders for each sibling."""
+    try:
+        await generate_and_post_daily_outfits(state, config, sisters)
+        log_event("[SYSTEM] Daily outfits generated successfully.")
+    except Exception as e:
+        log_event(f"[ERROR] Outfit generation failed: {e}")
+
+# ---------------------------------------------------------------------------
+# Startup
+# ---------------------------------------------------------------------------
+@app.on_event("startup")
+async def startup_event():
+    load_state()
+    await start_family()
+
+    # Start rituals
+    morning_task.start()
+    night_task.start()
+    outfit_task.start()
+
+    # Start bots
     for bot in sisters:
         asyncio.create_task(bot.start(os.getenv(bot.sister_info["env_var"])))
 
-    # Start scheduled tasks
-    morning_task.start()
-    night_task.start()
+    log_event("[SYSTEM] All systems online and running.")
 
-    log_event("🪶 Family system fully launched.")
-
-# -------------------------------
-# Run standalone (no uvicorn)
-# -------------------------------
-if __name__ == "__main__":
-    asyncio.run(start_family(config, sisters))
-
-# -------------------------------
-# Optional FastAPI interface
-# -------------------------------
-app = FastAPI()
-
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(start_family(config, sisters))
-    log_event("🌐 FastAPI startup triggered family launch.")
-
+# ---------------------------------------------------------------------------
+# Health Check
+# ---------------------------------------------------------------------------
 @app.get("/health")
 async def health():
-    return {
-        "status": "ok",
-        "time": datetime.now(AEDT).strftime("%Y-%m-%d %H:%M:%S %Z"),
-        "rotation_index": state.get("rotation_index"),
-        "theme_index": state.get("theme_index"),
-    }
+    return {"status": "ok", "time": datetime.datetime.now(AEDT).isoformat()}
