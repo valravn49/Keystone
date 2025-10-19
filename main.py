@@ -84,7 +84,7 @@ async def start_family():
     """Initialize all siblings and systems."""
     ensure_aria_systems(state, config, sisters)
     ensure_selene_systems(state, config, sisters)
-    ensure_cassandra_systems(state, config, sisters)
+    ensure_cass_systems(state, config, sisters)
     ensure_ivy_systems(state, config, sisters)
     ensure_will_systems(state, config, sisters)
 
