@@ -124,7 +124,7 @@ def _hour_in_range(now_h: int, wake: int, sleep: int) -> bool:
     if wake < sleep:  return wake <= now_h < sleep
     return now_h >= wake or now_h < sleep
 
-def is_cass_online(state: Dict, config: Dict) -> bool:
+def is_cassandra_online(state: Dict, config: Dict) -> bool:
     sc = assign_cass_schedule(state, config)
     now_h = datetime.now(AEDT).hour
     return _hour_in_range(now_h, sc["wake"], sc["sleep"])
