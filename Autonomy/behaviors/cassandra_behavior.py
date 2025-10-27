@@ -1,130 +1,129 @@
 import os, json, random, asyncio
 from datetime import datetime
+from zoneinfo import ZoneInfo
+from typing import Dict, List
+
 from llm import generate_llm_reply
 from logger import log_event
 
-CASS_PERSONALITY_JSON = "/Autonomy/personalities/Cassandra_Personality.json"
-CASS_MEMORY_JSON      = "/Autonomy/memory/Cassandra_Memory.json"
+AEDT = ZoneInfo("Australia/Sydney")
 
-CASS_MIN_SLEEP = 40 * 60
-CASS_MAX_SLEEP = 100 * 60
+PERSONALITY_JSON = "/Autonomy/personalities/Cassandra_Personality.json"
+MEMORY_JSON      = "/Autonomy/memory/Cassandra_Memory.json"
 
-def _load_json(path, default):
+CASS_MIN_SLEEP = 55 * 60
+CASS_MAX_SLEEP = 120 * 60
+
+# Cassandra: “prim & proper” AND a bit of a gym rat.
+REAL_MEDIA = {
+    "games": ["Code Vein", "NieR:Automata", "Hades", "Hollow Knight", "Zenless Zone Zero"],
+    "anime": ["ID:Invaded", "Kabaneri of the Iron Fortress", "Infinite Dendrogram", "Demon Slayer"],
+    "shows": ["Suits", "House", "The Rookie", "RWBY"],
+    "music": ["Ghost", "Breaking Benjamin", "BABYMETAL", "nerdcore", "synthwave"]
+}
+
+def _load_json(path, default): 
     try:
         if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception as e:
-        log_event(f"[WARN] Cassandra JSON read failed: {e}")
+            with open(path, "r", encoding="utf-8") as f: return json.load(f)
+    except Exception as e: log_event(f"[WARN] Cassandra JSON read failed {path}: {e}")
     return default
 
-def load_cass_profile():
-    # Cassandra = disciplined prim & proper + secret gym rat/kettlebell geek
-    return _load_json(CASS_PERSONALITY_JSON, {
-        "interests": ["discipline", "checklists", "kettlebells", "mobility work"],
-        "style": ["blunt", "dry-humored", "protective"]
-    })
+def load_profile() -> Dict:
+    d = _load_json(PERSONALITY_JSON, {})
+    d.setdefault("likes", ["discipline", "clean desk", "heavy squats", "structured plans"])
+    d.setdefault("dislikes", ["slacking", "mess"])
+    d.setdefault("style", ["assertive", "dry-humored", "protective"])
+    return d
 
-def load_cass_memory():
-    mem = _load_json(CASS_MEMORY_JSON, {"projects": {}, "recent_notes": []})
-    mem.setdefault("projects", {})
-    mem.setdefault("recent_notes", [])
-    return mem
-
-def save_cass_memory(mem):
-    try:
-        os.makedirs(os.path.dirname(CASS_MEMORY_JSON), exist_ok=True)
-        with open(CASS_MEMORY_JSON, "w", encoding="utf-8") as f:
-            json.dump(mem, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        log_event(f"[WARN] Cassandra memory write failed: {e}")
-
-# ------------------ SCHEDULE ------------------
-
-def _pick_range(span):
-    lo, hi = int(span[0]), int(span[1])
-    if hi < lo: lo, hi = hi, lo
-    return random.randint(lo, hi)
-
-def assign_cass_schedule(state, config):
-    today = datetime.now().date()
-    key, kd = "cassandra_schedule", "cassandra_schedule_date"
+def assign_schedule(state, config):
+    today = datetime.now(tz=AEDT).date()
+    key = "cassandra_schedule"; kd = f"{key}_date"
     if state.get(kd) == today and key in state: return state[key]
-    scfg = (config.get("schedules", {}) or {}).get("Cassandra", {"wake": [6, 8], "sleep": [21, 23]})
-    state[key] = {"wake": _pick_range(scfg["wake"]), "sleep": _pick_range(scfg["sleep"])}
-    state[kd] = today
-    return state[key]
+    sch = (config.get("schedules", {}) or {}).get("Cassandra", {"wake": [6, 8], "sleep": [22, 23]})
+    def pick(span):
+        lo, hi = int(span[0]), int(span[1])
+        if hi < lo: lo, hi = hi, lo
+        return random.randint(lo, hi)
+    sc = {"wake": pick(sch["wake"]), "sleep": pick(sch["sleep"])}
+    state[key]=sc; state[kd]=today; return sc
 
-def _hour_in_range(now, wake, sleep):
-    return True if wake == sleep else (wake <= now < sleep if wake < sleep else now >= wake or now < sleep)
+def _hour_in_range(n,w,s):
+    if w==s: return True
+    if w<s:  return w<=n<s
+    return n>=w or n<s
 
-def is_cassandra_online(state, config):
-    sc = assign_cass_schedule(state, config)
-    return _hour_in_range(datetime.now().hour, sc["wake"], sc["sleep"])
+def is_online(state, config):
+    sc = assign_schedule(state, config)
+    return _hour_in_range(datetime.now(tz=AEDT).hour, sc["wake"], sc["sleep"])
 
-# ------------------ CHATTY MODES ------------------
+def _hits(text:str)->List[str]:
+    low=text.lower(); out=[]
+    for items in REAL_MEDIA.values():
+        for it in items:
+            if it.lower() in low: out.append(it)
+    return list(set(out))
 
-CASS_MODES = ["no-nonsense", "dry-tease", "coachy", "protective"]
+def _weight(text:str, profile:Dict)->float:
+    likes=" ".join(profile.get("likes",[])).lower()
+    dislikes=" ".join(profile.get("dislikes",[])).lower()
+    boost=0.0
+    for m in _hits(text):
+        mlow=m.lower()
+        if any(w in likes for w in mlow.split()): boost+=0.25
+        if any(w in dislikes for w in mlow.split()): boost-=0.2
+    return boost
 
-async def cassandra_chatter_loop(state, config, sisters):
-    if state.get("cassandra_chatter_started"): return
-    state["cassandra_chatter_started"] = True
+async def _persona_reply(base:str)->str:
+    p=load_profile()
+    style=", ".join(p.get("style",["assertive","protective"]))
+    prompt=(
+        f"You are Cassandra. Personality: structured, protective, dry wit; secretly loves the gym. "
+        f"Sound like a strict but loving sister. Keep it concise, slightly sharp, but warm underneath. "
+        f"Style: {style}. {base}"
+    )
+    return await generate_llm_reply("Cassandra", prompt, None, "sister", [])
+
+async def chatter_loop(state, config, sisters):
+    if state.get("cass_chatter_started"): return
+    state["cass_chatter_started"]=True
     while True:
-        if is_cassandra_online(state, config) and random.random() < 0.11:
-            recent = [m for m in state.get("recent_messages", []) if m["author"] != "Cassandra"][-5:]
-            context = " ".join([f'{m["author"]}: "{m["content"]}"' for m in recent]) or "Silence."
-            mode = random.choice(CASS_MODES)
-            progress = state.get("Cassandra_project_progress", random.random())
-            prompt = (
-                f"Family context: {context}\nSpeak as Cassandra in a {mode} tone — blunt but caring big-sis coach. "
-                f"2 short sentences. If natural, nod to training/plans (~{int(progress*100)}%)."
-            )
+        if is_online(state, config) and random.random()<0.09:
             try:
-                msg = await generate_llm_reply("Cassandra", prompt, theme=None, role="sister", history=[])
+                msg=await _persona_reply(
+                    "Drop a brisk check-in. Tease someone for slacking, but add a real suggestion "
+                    "(like a quick set, a timer, or a tiny task)."
+                )
                 if msg:
                     for bot in sisters:
-                        if bot.sister_info["name"] == "Cassandra" and bot.is_ready():
-                            ch = bot.get_channel(config["family_group_channel"])
-                            if ch:
-                                await ch.send(msg)
-                                log_event(f"[CASS CHATTER] {msg}")
-                                state.setdefault("recent_messages", []).append({"author":"Cassandra","content":msg})
-                                state["recent_messages"] = state["recent_messages"][-25:]
+                        if bot.is_ready() and bot.sister_info["name"]=="Cassandra":
+                            ch=bot.get_channel(config["family_group_channel"])
+                            if ch: await ch.send(msg); log_event(f"[Cassandra][chatter] {msg}")
             except Exception as e:
                 log_event(f"[ERROR] Cassandra chatter: {e}")
         await asyncio.sleep(random.randint(CASS_MIN_SLEEP, CASS_MAX_SLEEP))
 
-async def cass_handle_message(state, config, sisters, author, content, channel_id):
-    if not is_cassandra_online(state, config): return
-    mentioned = "cassandra" in content.lower() or "cass" in content.lower()
-    p = 0.22 + 0.10 * sum(1 for kw in load_cass_profile().get("interests", []) if kw.lower() in content.lower())
-    if mentioned: p = 1.0
-    if random.random() >= min(0.95, p): return
-
-    recent = [m for m in state.get("recent_messages", []) if m["author"] != "Cassandra"][-3:]
-    context = " ".join([f'{m["author"]}: "{m["content"]}"' for m in recent])
-    tone = random.choice(CASS_MODES)
-    progress = state.get("Cassandra_project_progress", random.random())
-    prompt = (
-        f"Family context: {context}\n{author} said: \"{content}\".\n"
-        f"As Cassandra in a {tone} tone—blunt but protective. 1–2 sentences. "
-        f"Reference routine/training (~{int(progress*100)}%) only if it fits."
-    )
+async def handle_message(state, config, sisters, author, content, channel_id):
+    if not is_online(state, config): return
+    prof=load_profile()
+    chance=0.2+_weight(content, prof)
+    if "cassandra" in content.lower(): chance=1.0
+    if random.random()>=min(1.0,max(0.05,chance)) and "cassandra" not in content.lower():
+        return
     try:
-        reply = await generate_llm_reply("Cassandra", prompt, theme=None, role="sister", history=[])
+        reply=await _persona_reply(
+            f"{author} said: \"{content}\" — reply like the strict but caring sister. "
+            f"Short, specific, maybe a tiny gym quip."
+        )
         if reply:
             for bot in sisters:
-                if bot.is_ready() and bot.sister_info["name"] == "Cassandra":
-                    ch = bot.get_channel(config["family_group_channel"])
-                    if ch:
-                        await ch.send(reply)
-                        log_event(f"[CASS REPLY] → {author}: {reply}")
-                        state.setdefault("recent_messages", []).append({"author":"Cassandra","content":reply})
-                        state["recent_messages"] = state["recent_messages"][-25:]
+                if bot.is_ready() and bot.sister_info["name"]=="Cassandra":
+                    ch=bot.get_channel(config["family_group_channel"])
+                    if ch: await ch.send(reply); log_event(f"[Cassandra][reply] → {author}: {reply}")
     except Exception as e:
-        log_event(f"[ERROR] Cassandra reactive: {e}")
+        log_event(f"[ERROR] Cassandra reply: {e}")
 
-def ensure_cass_systems(state, config, sisters):
-    assign_cass_schedule(state, config)
-    if not state.get("cassandra_chatter_started"):
-        asyncio.create_task(cassandra_chatter_loop(state, config, sisters))
+def ensure_systems(state, config, sisters):
+    assign_schedule(state, config)
+    if not state.get("cass_chatter_started"):
+        asyncio.create_task(chatter_loop(state, config, sisters))
