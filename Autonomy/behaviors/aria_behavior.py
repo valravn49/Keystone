@@ -1,36 +1,98 @@
-import os, json, random, asyncio
+import os
+import json
+import random
+import asyncio
 from datetime import datetime
+import pytz
+from typing import Dict, Optional, List
+
 from llm import generate_llm_reply
 from logger import log_event
 
+# ---------------------------------------------------------------------------
+# Personality and memory paths
+# ---------------------------------------------------------------------------
 ARIA_PERSONALITY_JSON = "/Autonomy/personalities/Aria_Personality.json"
 ARIA_MEMORY_JSON = "/Autonomy/memory/Aria_Memory.json"
 
+# ---------------------------------------------------------------------------
+# Defaults
+# ---------------------------------------------------------------------------
 ARIA_MIN_SLEEP = 50 * 60
 ARIA_MAX_SLEEP = 120 * 60
+RANT_CHANCE = 0.05
+THOUGHTFUL_RESPONSE_CHANCE = 0.3
 
-def _load_json(path, default):
+AEDT = pytz.timezone("Australia/Sydney")
+
+# ---------------------------------------------------------------------------
+# Unique media preferences
+# ---------------------------------------------------------------------------
+REAL_MEDIA = {
+    "games": [
+        "The Legend of Zelda: Tears of the Kingdom",
+        "Stardew Valley",
+        "Final Fantasy XIV",
+        "Cities: Skylines II",
+        "Factorio",
+        "Spiritfarer",
+        "NieR:Automata",
+    ],
+    "anime": [
+        "Vivy: Fluorite Eye's Song",
+        "ID:Invaded",
+        "Erased",
+        "Made in Abyss",
+        "Ghost in the Shell: SAC_2045",
+    ],
+    "shows": [
+        "House",
+        "The Rookie",
+        "The Good Place",
+        "Black Mirror",
+        "Arcane",
+    ],
+    "music": [
+        "lofi hip hop",
+        "ambient piano",
+        "chillstep",
+        "Ghibli soundtracks",
+        "soft rock classics",
+    ],
+}
+
+def preferred_media_category() -> str:
+    """Adds bias toward Aria’s reflective tastes."""
+    return random.choice(["games", "anime", "music"])
+
+# ---------------------------------------------------------------------------
+# JSON handling
+# ---------------------------------------------------------------------------
+def _load_json(path: str, default: dict) -> dict:
     try:
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
     except Exception as e:
-        log_event(f"[WARN] Aria JSON read failed: {e}")
+        log_event(f"[WARN] Aria JSON read failed {path}: {e}")
     return default
 
-def load_aria_profile():
-    return _load_json(ARIA_PERSONALITY_JSON, {
-        "interests": ["organization", "craft", "electronics", "books"],
-        "style": ["structured", "gentle", "reflective"]
-    })
 
-def load_aria_memory():
+def load_aria_profile() -> Dict:
+    profile = _load_json(ARIA_PERSONALITY_JSON, {})
+    profile.setdefault("interests", ["organization", "craft", "electronics", "books"])
+    profile.setdefault("style", ["structured", "gentle", "reflective"])
+    return profile
+
+
+def load_aria_memory() -> Dict:
     mem = _load_json(ARIA_MEMORY_JSON, {"projects": {}, "recent_notes": []})
     mem.setdefault("projects", {})
     mem.setdefault("recent_notes", [])
     return mem
 
-def save_aria_memory(mem):
+
+def save_aria_memory(mem: Dict):
     try:
         os.makedirs(os.path.dirname(ARIA_MEMORY_JSON), exist_ok=True)
         with open(ARIA_MEMORY_JSON, "w", encoding="utf-8") as f:
@@ -38,74 +100,161 @@ def save_aria_memory(mem):
     except Exception as e:
         log_event(f"[WARN] Aria memory write failed: {e}")
 
-def assign_aria_schedule(state, config):
-    today = datetime.now().date()
-    key, kd = "aria_schedule", "aria_schedule_date"
-    if state.get(kd) == today: return state[key]
-    scfg = (config.get("schedules", {}) or {}).get("Aria", {"wake": [6,8], "sleep": [22,23]})
-    def pick(span): lo, hi = int(span[0]), int(span[1]); return random.randint(lo, hi)
-    state[key] = {"wake": pick(scfg["wake"]), "sleep": pick(scfg["sleep"])}
+# ---------------------------------------------------------------------------
+# Schedule
+# ---------------------------------------------------------------------------
+def assign_aria_schedule(state: Dict, config: Dict):
+    today = datetime.now(AEDT).date()
+    key = "aria_schedule"
+    kd = f"{key}_date"
+    if state.get(kd) == today and key in state:
+        return state[key]
+
+    scfg = (config.get("schedules", {}) or {}).get("Aria", {"wake": [6, 8], "sleep": [22, 23]})
+    def pick(span):
+        lo, hi = int(span[0]), int(span[1])
+        if hi <= lo:
+            hi = lo + 1
+        return random.randint(lo, hi)
+    schedule = {"wake": pick(scfg["wake"]), "sleep": pick(scfg["sleep"])}
+    state[key] = schedule
     state[kd] = today
-    return state[key]
+    return schedule
 
-def _hour_in_range(now, wake, sleep):
-    return True if wake == sleep else (wake <= now < sleep if wake < sleep else now >= wake or now < sleep)
 
-def is_aria_online(state, config):
+def _hour_in_range(now_h: int, wake: int, sleep: int) -> bool:
+    if wake == sleep:
+        return True
+    if wake < sleep:
+        return wake <= now_h < sleep
+    return now_h >= wake or now_h < sleep
+
+
+def is_aria_online(state: Dict, config: Dict) -> bool:
     sc = assign_aria_schedule(state, config)
-    return _hour_in_range(datetime.now().hour, sc["wake"], sc["sleep"])
+    now_h = datetime.now(AEDT).hour
+    return _hour_in_range(now_h, sc["wake"], sc["sleep"])
 
-# ------------------ CHATTER ------------------
-ARIA_MODES = ["reflective", "practical", "gentle", "teasing"]
+# ---------------------------------------------------------------------------
+# Persona reply generator
+# ---------------------------------------------------------------------------
+async def _persona_reply(
+    base_prompt: str,
+    reflective: bool = False,
+    state: Dict = None,
+    config: Dict = None,
+    project_progress: Optional[float] = None,
+    media_mention: Optional[str] = None,
+) -> str:
+    profile = load_aria_profile()
+    style = ", ".join(profile.get("style", ["structured", "gentle"]))
+    personality = profile.get("core_personality", "Calm, methodical, detail-oriented but warm.")
+    tone = "quietly thoughtful and deliberate" if reflective else "soft, concise, and lightly teasing"
 
-async def aria_chatter_loop(state, config, sisters):
-    if state.get("aria_chatter_started"): return
+    project_phrase = ""
+    if project_progress is not None:
+        if project_progress < 0.4:
+            project_phrase = " My project’s still early — mostly sketches and planning."
+        elif project_progress < 0.8:
+            project_phrase = " It’s coming together piece by piece."
+        else:
+            project_phrase = " Nearly done — just final refinements now."
+
+    media_clause = f" Maybe reference {media_mention} naturally." if media_mention else ""
+
+    prompt = (
+        f"You are Aria. Personality: {personality}. Speak with a {style} tone, {tone}. "
+        f"Keep it realistic and grounded.{project_phrase}{media_clause} {base_prompt}"
+    )
+
+    return await generate_llm_reply(
+        sister="Aria",
+        user_message=prompt,
+        theme=None,
+        role="sister",
+        history=[],
+    )
+
+# ---------------------------------------------------------------------------
+# Background chatter loop
+# ---------------------------------------------------------------------------
+async def aria_chatter_loop(state: Dict, config: Dict, sisters):
+    if state.get("aria_chatter_started"):
+        return
     state["aria_chatter_started"] = True
+
     while True:
-        if is_aria_online(state, config) and random.random() < 0.08:
-            recent = [m for m in state.get("recent_messages", []) if m["author"] != "Aria"][-4:]
-            context = " ".join([f'{m['author']}: \"{m['content']}\"' for m in recent]) or "Quiet room."
-            mode = random.choice(ARIA_MODES)
-            progress = state.get("Aria_project_progress", random.random())
-            prompt = (f"Chat: {context}\nSpeak as Aria in a {mode} tone — calm, kind, practical.\n"
-                      f"Be short (2–3 sentences), subtly referencing current project ({int(progress*100)}%).")
-            try:
-                msg = await generate_llm_reply("Aria", prompt, theme=None, role="sister", history=[])
-                if msg:
-                    for bot in sisters:
-                        if bot.sister_info["name"] == "Aria" and bot.is_ready():
-                            ch = bot.get_channel(config["family_group_channel"])
-                            if ch:
-                                await ch.send(msg)
-                                log_event(f"[ARIA CHATTER] {msg}")
-                                state.setdefault("recent_messages", []).append({"author": "Aria", "content": msg})
-                                state["recent_messages"] = state["recent_messages"][-25:]
-            except Exception as e: log_event(f"[ERROR] Aria chatter: {e}")
+        if is_aria_online(state, config):
+            base_p = 0.08
+            if random.random() < base_p:
+                reflective_mode = random.random() < THOUGHTFUL_RESPONSE_CHANCE
+                progress = state.get("Aria_project_progress", random.random())
+                media_choice = random.choice(REAL_MEDIA.get(preferred_media_category(), []))
+                try:
+                    msg = await _persona_reply(
+                        "Share a brief observation or question in the group chat — practical, soft, or reflective.",
+                        reflective=reflective_mode,
+                        state=state,
+                        config=config,
+                        project_progress=progress,
+                        media_mention=media_choice if random.random() < 0.5 else None,
+                    )
+                    if msg:
+                        for bot in sisters:
+                            if bot.sister_info["name"] == "Aria" and bot.is_ready():
+                                ch = bot.get_channel(config["family_group_channel"])
+                                if ch:
+                                    await ch.send(msg)
+                                    log_event(f"[CHATTER] Aria: {msg}")
+                except Exception as e:
+                    log_event(f"[ERROR] Aria chatter: {e}")
         await asyncio.sleep(random.randint(ARIA_MIN_SLEEP, ARIA_MAX_SLEEP))
 
-async def aria_handle_message(state, config, sisters, author, content, channel_id):
-    if not is_aria_online(state, config): return
-    tone = random.choice(["reflective", "practical", "gentle", "teasing"])
-    recent = [m for m in state.get("recent_messages", []) if m["author"] != "Aria"][-3:]
-    context = " ".join([f'{m['author']}: \"{m['content']}\"' for m in recent])
+# ---------------------------------------------------------------------------
+# Reactive handler
+# ---------------------------------------------------------------------------
+async def aria_handle_message(state: Dict, config: Dict, sisters, author: str, content: str, channel_id: int):
+    if not is_aria_online(state, config):
+        return
+
+    profile = load_aria_profile()
+    interests = profile.get("likes", [])
+    match_score = sum(1.0 for kw in interests if kw.lower() in content.lower())
+
+    chance = 0.15 + (0.2 * min(match_score, 2))
+    if "aria" in content.lower():
+        chance = 1.0
+
+    if random.random() >= chance:
+        return
+
+    reflective_mode = random.random() < 0.5
     progress = state.get("Aria_project_progress", random.random())
-    prompt = (f"Chat: {context}\n{author} said: \"{content}\".\n"
-              f"As Aria in a {tone} tone — balanced, kind, occasionally teasing. "
-              f"1–2 sentences. Project at {int(progress*100)}%.")
+    media_choice = random.choice(REAL_MEDIA.get(preferred_media_category(), []))
+
     try:
-        reply = await generate_llm_reply("Aria", prompt, theme=None, role="sister", history=[])
+        reply = await _persona_reply(
+            f"{author} said: \"{content}\" — respond naturally and like a patient older sister, practical but kind.",
+            reflective=reflective_mode,
+            state=state,
+            config=config,
+            project_progress=progress,
+            media_mention=media_choice if random.random() < 0.4 else None,
+        )
         if reply:
             for bot in sisters:
                 if bot.is_ready() and bot.sister_info["name"] == "Aria":
                     ch = bot.get_channel(config["family_group_channel"])
                     if ch:
                         await ch.send(reply)
-                        log_event(f"[ARIA REPLY] → {author}: {reply}")
-                        state.setdefault("recent_messages", []).append({"author": "Aria", "content": reply})
-                        state["recent_messages"] = state["recent_messages"][-25:]
-    except Exception as e: log_event(f"[ERROR] Aria reactive: {e}")
+                        log_event(f"[REPLY] Aria → {author}: {reply}")
+    except Exception as e:
+        log_event(f"[ERROR] Aria reactive: {e}")
 
-def ensure_aria_systems(state, config, sisters):
+# ---------------------------------------------------------------------------
+# Startup hook
+# ---------------------------------------------------------------------------
+def ensure_aria_systems(state: Dict, config: Dict, sisters):
     assign_aria_schedule(state, config)
     if not state.get("aria_chatter_started"):
         asyncio.create_task(aria_chatter_loop(state, config, sisters))
