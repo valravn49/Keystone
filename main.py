@@ -31,7 +31,9 @@ from Autonomy.behaviors.will_behavior import (
 )
 
 # Import rituals and config
-from config import config
+# Load config from JSON file
+with open("/app/config.json", "r", encoding="utf-8") as f:
+    config = json.load(f)
 
 # Timezone
 AEDT = pytz.timezone("Australia/Sydney")
