@@ -55,7 +55,7 @@ BEHAVIOR_HANDLERS = {
 def setup_siblings(state, config, sisters):
     ensure_aria_systems(state, config, sisters)
     ensure_selene_systems(state, config, sisters)
-    ensure_cassandra_systems(state, config, sisters)
+    ensure_cass_systems(state, config, sisters)
     ensure_ivy_systems(state, config, sisters)
     ensure_will_systems(state, config, sisters)
     log_event("[INIT] All sibling systems initialized.")
