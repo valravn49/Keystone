@@ -134,7 +134,7 @@ async def startup_event():
     sisters = []  # you already populate this list in your live runtime
 
     # Initialize state and load configurations
-    load_state(state)
+    load_state()
     setup_siblings(state, config, sisters)
 
     # Start daily ritual loop
