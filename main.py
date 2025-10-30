@@ -31,7 +31,6 @@ from Autonomy.behaviors.will_behavior import (
 )
 
 # Import rituals and config
-from rituals import send_morning_message, send_night_message
 from config import config
 
 # Timezone
