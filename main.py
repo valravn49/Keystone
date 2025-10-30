@@ -46,7 +46,7 @@ app = FastAPI()
 BEHAVIOR_HANDLERS = {
     "Aria": aria_handle_message,
     "Selene": selene_handle_message,
-    "Cassandra": cassandra_handle_message,
+    "Cassandra": cass_handle_message,
     "Ivy": ivy_handle_message,
     "Will": will_handle_message,
 }
