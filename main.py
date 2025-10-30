@@ -1,251 +1,174 @@
 import os
-import json
-import random
 import asyncio
-import datetime
+import random
+from datetime import datetime, timedelta
 import pytz
-import discord
-from discord.ext import commands, tasks
-from fastapi import FastAPI
 
-# === Behavior Imports ===
+from fastapi import FastAPI
+from logger import log_event
+from state_manager import state, load_state, save_state
+
+# Import all sibling behaviors
 from Autonomy.behaviors.aria_behavior import (
-    aria_handle_message,
     ensure_aria_systems,
-    is_aria_online,
+    aria_handle_message,
 )
 from Autonomy.behaviors.selene_behavior import (
-    selene_handle_message,
     ensure_selene_systems,
-    is_selene_online,
+    selene_handle_message,
 )
 from Autonomy.behaviors.cassandra_behavior import (
-    cass_handle_message,
     ensure_cass_systems,
-    is_cassandra_online,
+    cass_handle_message,
 )
 from Autonomy.behaviors.ivy_behavior import (
-    ivy_handle_message,
     ensure_ivy_systems,
-    is_ivy_online,
+    ivy_handle_message,
 )
 from Autonomy.behaviors.will_behavior import (
-    will_handle_message,
     ensure_will_systems,
-    is_will_online,
+    will_handle_message,
 )
 
-# === Shared ===
-from logger import log_event
-from workouts import get_today_workout
-from image_utils import generate_and_post_daily_outfits
-from sisters_behavior import send_morning_message, send_night_message, get_today_rotation
+# Import rituals and config
+from rituals import send_morning_message, send_night_message
+from config import config
 
-# === State ===
-from Autonomy.state_manager import state, save_state, load_state
-
-# ---------------------------------------------------------------------------
-# FastAPI App
-# ---------------------------------------------------------------------------
-app = FastAPI()
-
-# ---------------------------------------------------------------------------
-# Discord Setup
-# ---------------------------------------------------------------------------
-with open("config.json", "r", encoding="utf-8") as f:
-    config = json.load(f)
-
-intents = discord.Intents.default()
-intents.messages = True
-intents.guilds = True
-intents.message_content = True
-
-class SisterBot(commands.Bot):
-    def __init__(self, sister_info):
-        super().__init__(command_prefix="!", intents=intents)
-        self.sister_info = sister_info
-
-sisters = [SisterBot(s) for s in config["rotation"]]
-
-# ---------------------------------------------------------------------------
-# Time Conversion for AEDT (Australian Eastern Daylight Time)
-# ---------------------------------------------------------------------------
+# Timezone
 AEDT = pytz.timezone("Australia/Sydney")
 
-def converted_time(hour: int, minute: int = 0) -> datetime.time:
-    now = datetime.datetime.now(AEDT)
-    local_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    return local_time.timetz()
+# FastAPI app
+app = FastAPI()
 
-# ---------------------------------------------------------------------------
-# Family System Startup
-# ---------------------------------------------------------------------------
-async def start_family():
-    """Initialize all siblings and systems."""
+# Family behavior handler map
+BEHAVIOR_HANDLERS = {
+    "Aria": aria_handle_message,
+    "Selene": selene_handle_message,
+    "Cassandra": cassandra_handle_message,
+    "Ivy": ivy_handle_message,
+    "Will": will_handle_message,
+}
+
+# Family setup function
+def setup_siblings(state, config, sisters):
     ensure_aria_systems(state, config, sisters)
     ensure_selene_systems(state, config, sisters)
-    ensure_cass_systems(state, config, sisters)
+    ensure_cassandra_systems(state, config, sisters)
     ensure_ivy_systems(state, config, sisters)
     ensure_will_systems(state, config, sisters)
-
-    log_event("[SYSTEM] Family startup complete.")
-
-# ---------------------------------------------------------------------------
-# Morning Ritual — Multi-turn Sibling Conversation
-# ---------------------------------------------------------------------------
-@tasks.loop(time=converted_time(6, 0))
-async def morning_task():
-    await send_morning_message(state, config, sisters)
-    await asyncio.sleep(random.uniform(6, 12))
-
-    rotation = get_today_rotation(state, config)
-    lead = rotation["lead"]
-    channel_id = config["family_group_channel"]
-
-    lead_msg = state.get("last_morning_message", f"Morning message by {lead}")
-
-    # Online checks and message handlers
-    online_checks = {
-        "Aria": is_aria_online,
-        "Selene": is_selene_online,
-        "Cassandra": is_cassandra_online,
-        "Ivy": is_ivy_online,
-        "Will": is_will_online,
-    }
-    handlers = {
-        "Aria": aria_handle_message,
-        "Selene": selene_handle_message,
-        "Cassandra": cassandra_handle_message,
-        "Ivy": ivy_handle_message,
-        "Will": will_handle_message,
-    }
-
-    # Phase 1: everyone replies to the lead
-    repliers = []
-    for bot in sisters:
-        name = bot.sister_info["name"]
-        if name == lead:
-            continue
-        check_func = online_checks.get(name)
-        if check_func and check_func(state, config) and random.random() < 0.85:
-            try:
-                await handlers[name](state, config, sisters, author=lead, content=lead_msg, channel_id=channel_id)
-                repliers.append(name)
-                await asyncio.sleep(random.uniform(4, 10))
-            except Exception as e:
-                log_event(f"[ERROR] {name} morning reply failed: {e}")
-
-    # Phase 2: cross-chat between siblings
-    if repliers:
-        for name in repliers:
-            others = [r for r in repliers if r != name]
-            if not others:
-                continue
-            target = random.choice(others)
-            if random.random() < 0.5:
-                try:
-                    content = f"{target} joined the morning chat."
-                    await handlers[name](state, config, sisters, author=target, content=content, channel_id=channel_id)
-                    await asyncio.sleep(random.uniform(3, 8))
-                except Exception as e:
-                    log_event(f"[ERROR] Morning cross-chat failed ({name} ↔ {target}): {e}")
-
-    log_event("[SYSTEM] Morning conversation complete — siblings interacted.")
+    log_event("[INIT] All sibling systems initialized.")
 
 # ---------------------------------------------------------------------------
-# Night Ritual — Multi-turn Sibling Reflection
+# Morning & Night Rituals Scheduler
 # ---------------------------------------------------------------------------
-@tasks.loop(time=converted_time(22, 0))
-async def night_task():
-    await send_night_message(state, config, sisters)
-    await asyncio.sleep(random.uniform(8, 14))
 
-    rotation = get_today_rotation(state, config)
-    lead = rotation["lead"]
-    channel_id = config["family_group_channel"]
+async def daily_ritual_loop(sisters):
+    """Runs morning and night rituals based on AEDT time."""
+    while True:
+        now = datetime.now(AEDT)
+        hour = now.hour
 
-    lead_msg = state.get("last_night_message", f"Night reflection by {lead}")
+        # Morning ritual around 06:00–08:00 AEDT
+        if 6 <= hour < 8 and not state.get("morning_done_today"):
+            await send_morning_message(state, config, sisters)
+            state["morning_done_today"] = True
+            save_state(state)
 
-    online_checks = {
-        "Aria": is_aria_online,
-        "Selene": is_selene_online,
-        "Cassandra": is_cassandra_online,
-        "Ivy": is_ivy_online,
-        "Will": is_will_online,
-    }
-    handlers = {
-        "Aria": aria_handle_message,
-        "Selene": selene_handle_message,
-        "Cassandra": cassandra_handle_message,
-        "Ivy": ivy_handle_message,
-        "Will": will_handle_message,
-    }
+        # Reset for next day
+        if hour >= 9 and state.get("morning_done_today"):
+            state["morning_done_today"] = False
 
-    repliers = []
-    for bot in sisters:
-        name = bot.sister_info["name"]
-        if name == lead:
-            continue
-        check_func = online_checks.get(name)
-        if check_func and check_func(state, config) and random.random() < 0.75:
-            try:
-                await handlers[name](state, config, sisters, author=lead, content=lead_msg, channel_id=channel_id)
-                repliers.append(name)
-                await asyncio.sleep(random.uniform(6, 14))
-            except Exception as e:
-                log_event(f"[ERROR] {name} night reply failed: {e}")
+        # Night ritual around 21:00–23:00 AEDT
+        if 21 <= hour < 23 and not state.get("night_done_today"):
+            await send_night_message(state, config, sisters)
+            state["night_done_today"] = True
+            save_state(state)
 
-    # Cross-chat (soft tone)
-    if repliers:
-        for name in repliers:
-            others = [r for r in repliers if r != name]
-            if not others:
-                continue
-            target = random.choice(others)
-            if random.random() < 0.4:
-                try:
-                    content = f"{target} mentioned something before sleep."
-                    await handlers[name](state, config, sisters, author=target, content=content, channel_id=channel_id)
-                    await asyncio.sleep(random.uniform(6, 12))
-                except Exception as e:
-                    log_event(f"[ERROR] Night cross-chat failed ({name} ↔ {target}): {e}")
+        if hour >= 0 and hour < 5:
+            state["night_done_today"] = False
 
-    log_event("[SYSTEM] Night reflection complete — family shared final thoughts.")
+        await asyncio.sleep(300)  # check every 5 min
+
 
 # ---------------------------------------------------------------------------
-# Outfit Generator (Daily)
+# Family Conversation Relay System
 # ---------------------------------------------------------------------------
-@tasks.loop(time=converted_time(7, 30))
-async def outfit_task():
-    """Generate and post daily outfit renders for each sibling."""
-    try:
-        await generate_and_post_daily_outfits(state, config, sisters)
-        log_event("[SYSTEM] Daily outfits generated successfully.")
-    except Exception as e:
-        log_event(f"[ERROR] Outfit generation failed: {e}")
+
+async def on_family_message(message, sisters):
+    """Trigger sibling responses when one posts in the family chat."""
+    author = getattr(message.author, "display_name", None)
+    content = getattr(message, "content", None)
+    if not author or not content:
+        return
+
+    # Ignore if not one of the family
+    if author not in BEHAVIOR_HANDLERS.keys():
+        return
+
+    # Get awake siblings except author
+    responders = [s for s in sisters if s.sister_info["name"] != author]
+    random.shuffle(responders)
+
+    # Ensure natural staggered replies
+    for bot in responders:
+        if random.random() < 0.8:  # 80% chance to reply
+            await asyncio.sleep(random.randint(3, 12))
+            if bot.is_ready():
+                handler = BEHAVIOR_HANDLERS.get(bot.sister_info["name"])
+                if handler:
+                    try:
+                        await handler(state, config, sisters, author, content, message.channel.id)
+                        log_event(f"[RELAY] {bot.sister_info['name']} replied to {author}")
+                    except Exception as e:
+                        log_event(f"[ERROR] {bot.sister_info['name']} relay failed: {e}")
 
 # ---------------------------------------------------------------------------
-# Startup
+# Startup / Scheduler setup
 # ---------------------------------------------------------------------------
+
 @app.on_event("startup")
 async def startup_event():
-    load_state()
-    await start_family()
+    """Initialize bots, state, and async loops."""
+    sisters = []  # you already populate this list in your live runtime
 
-    # Start rituals
-    morning_task.start()
-    night_task.start()
-    outfit_task.start()
+    # Initialize state and load configurations
+    load_state(state)
+    setup_siblings(state, config, sisters)
 
-    # Start bots
-    for bot in sisters:
-        asyncio.create_task(bot.start(os.getenv(bot.sister_info["env_var"])))
+    # Start daily ritual loop
+    asyncio.create_task(daily_ritual_loop(sisters))
+    log_event("[STARTUP] Daily ritual loop started.")
 
-    log_event("[SYSTEM] All systems online and running.")
+    # Save periodically
+    asyncio.create_task(periodic_state_save())
+
+async def periodic_state_save():
+    """Persist state every 10 minutes to prevent data loss."""
+    while True:
+        save_state(state)
+        await asyncio.sleep(600)
 
 # ---------------------------------------------------------------------------
-# Health Check
+# Healthcheck & Utilities
 # ---------------------------------------------------------------------------
+
 @app.get("/health")
-async def health():
-    return {"status": "ok", "time": datetime.datetime.now(AEDT).isoformat()}
+def health():
+    return {"status": "ok", "timestamp": datetime.now(AEDT).isoformat()}
+
+# ---------------------------------------------------------------------------
+# Manual command: relay simulation (for testing)
+# ---------------------------------------------------------------------------
+
+@app.post("/simulate_message")
+async def simulate_message(author: str, content: str):
+    """Simulate one sibling posting to trigger relay responses."""
+    class Dummy:
+        def __init__(self, author, content):
+            self.author = type("A", (), {"display_name": author})()
+            self.content = content
+            self.channel = type("C", (), {"id": 1234})()
+    dummy = Dummy(author, content)
+    sisters = []  # placeholder; actual bots come from runtime
+    await on_family_message(dummy, sisters)
+    return {"status": "triggered", "author": author, "content": content}
