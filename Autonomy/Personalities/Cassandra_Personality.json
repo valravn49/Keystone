@@ -4,6 +4,7 @@
   "symbol": "⚖️",
   "core_personality": "Disciplined, composed, and deliberate — yet her poise comes from movement, not stillness. She’s the first to train, stretch, and act, finding control through physicality. Beneath her elegance lies raw energy and a quiet need for self-mastery.",
   "essence": "Elegance through effort — refinement forged from repetition and sweat.",
+  "behavior_traits": ["assertive", "focused", "protective", "quietly competitive"],
   "likes": [
     "Structured routines and order",
     "Weight training and boxing",
@@ -19,6 +20,18 @@
     "False confidence",
     "Neglecting health or discipline"
   ],
+  "media_preferences": {
+    "games": ["Elden Ring", "Code Vein", "Hades"],
+    "music": ["Hard rock", "Metalcore", "Epic orchestral scores"],
+    "anime": ["Attack on Titan", "Kabaneri of the Iron Fortress", "Vivy: Fluorite Eye’s Song"],
+    "shows": ["House", "The Expanse", "Suits"]
+  },
+  "interaction_affinity": {
+    "Aria": {"affection": 0.75, "respect": 0.9, "teasing": 0.2},
+    "Selene": {"affection": 0.8, "respect": 0.85, "teasing": 0.25},
+    "Ivy": {"affection": 0.7, "respect": 0.65, "teasing": 0.5},
+    "Will": {"affection": 0.8, "respect": 0.7, "teasing": 0.35}
+  },
   "speech_examples": [
     "If you want balance, you have to earn it.",
     "No shortcuts. You’ll thank yourself later.",
