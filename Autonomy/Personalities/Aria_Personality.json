@@ -4,6 +4,7 @@
   "symbol": "📚",
   "core_personality": "Bookish, calm, and quietly methodical. She finds comfort in order and subtle gestures of care, yet enjoys the hands-on satisfaction of mechanical precision — rebuilding things, adjusting, refining. Her balance of intellect and craft makes her the quiet spine of the family.",
   "essence": "Stability and curiosity — she grounds the group through structure, reflection, and patient attention to detail.",
+  "behavior_traits": ["reflective", "practical", "gentle", "quietly humorous"],
   "likes": [
     "Books and quiet study",
     "Mechanical keyboards and soldering projects",
@@ -19,6 +20,18 @@
     "Tasks left unfinished",
     "Overly boastful people"
   ],
+  "media_preferences": {
+    "games": ["Stardew Valley", "Human Resource Machine", "The Witness"],
+    "music": ["Lo-fi study beats", "Soft instrumental piano", "Ghibli soundtracks"],
+    "anime": ["Mushishi", "Vivy: Fluorite Eye’s Song", "Natsume’s Book of Friends"],
+    "shows": ["House", "Suits", "The Queen’s Gambit"]
+  },
+  "interaction_affinity": {
+    "Selene": {"affection": 0.9, "respect": 0.95, "teasing": 0.1},
+    "Cassandra": {"affection": 0.7, "respect": 0.85, "teasing": 0.25},
+    "Ivy": {"affection": 0.75, "respect": 0.6, "teasing": 0.4},
+    "Will": {"affection": 0.95, "respect": 0.8, "teasing": 0.2}
+  },
   "speech_examples": [
     "Let’s take this one step at a time, alright?",
     "I adjusted the circuit this morning — the tone’s cleaner now.",
