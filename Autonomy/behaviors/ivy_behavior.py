@@ -1,28 +1,37 @@
-import os, json, random, asyncio
+import os
+import json
+import random
+import asyncio
 from datetime import datetime
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 import pytz
 
 from llm import generate_llm_reply
 from logger import log_event
+from Autonomy.behaviors.memory_helpers import get_seasonal_memory, add_seasonal_memory
 
-PERSO_PATH = "/Autonomy/personalities/Ivy_Personality.json"
-MEMO_PATH  = "/Autonomy/memory/Ivy_Memory.json"
+# ---------------------------------------------------------------------------
+# Paths and constants
+# ---------------------------------------------------------------------------
 
+IVY_PERSONALITY_JSON = "/Autonomy/personalities/Ivy_Personality.json"
+IVY_MEMORY_JSON = "/Autonomy/memory/Ivy_Memory.json"
 AEDT = pytz.timezone("Australia/Sydney")
 
-IVY_MIN_SLEEP = 35 * 60
-IVY_MAX_SLEEP = 90 * 60
+IVY_MIN_SLEEP = 45 * 60
+IVY_MAX_SLEEP = 110 * 60
+TEASING_RESPONSE_CHANCE = 0.45  # % chance of playful tone instead of sincere
 
-# Ivy: fashionista + open grease-monkey interest
-IVY_MEDIA = {
-    "fashion": ["thrift flips", "runway micro trends", "capsule wardrobes"],
-    "mechanic": ["engine rebuild timelapses", "detailing videos", "track day vlogs"],
-    "music":   ["nerdcore drops", "hyperpop", "rock remixes"],
-    "anime":   ["Kabaneri of the Iron Fortress", "ID:Invaded", "Jujutsu Kaisen"],
-    "games":   ["Zenless Zone Zero", "Code Vein", "Overwatch 2"],
-    "shows":   ["RWBY", "The Rookie"],
+HOLIDAY_KEYWORDS = {
+    "halloween": "Halloween",
+    "christmas": "Christmas",
+    "new year": "New Year",
+    "valentine": "Valentine's Day",
 }
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _load_json(path: str, default: dict) -> dict:
     try:
@@ -30,124 +39,206 @@ def _load_json(path: str, default: dict) -> dict:
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
     except Exception as e:
-        log_event(f"[Ivy][WARN] JSON read failed {path}: {e}")
+        log_event(f"[WARN] Ivy JSON read failed {path}: {e}")
     return default
 
-def _save_json(path: str, data: dict):
+
+def load_ivy_profile() -> Dict:
+    profile = _load_json(IVY_PERSONALITY_JSON, {})
+    profile.setdefault("interests", ["fashion", "makeup", "mechanics", "music", "mischief"])
+    profile.setdefault("style", ["flirty", "sarcastic", "chaotic good"])
+    return profile
+
+
+def load_ivy_memory() -> Dict:
+    mem = _load_json(IVY_MEMORY_JSON, {"projects": {}, "recent_notes": [], "seasonal_memory": {}})
+    mem.setdefault("projects", {})
+    mem.setdefault("recent_notes", [])
+    mem.setdefault("seasonal_memory", {})
+    return mem
+
+
+def save_ivy_memory(mem: Dict):
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.makedirs(os.path.dirname(IVY_MEMORY_JSON), exist_ok=True)
+        with open(IVY_MEMORY_JSON, "w", encoding="utf-8") as f:
+            json.dump(mem, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        log_event(f"[Ivy][WARN] JSON write failed {path}: {e}")
+        log_event(f"[WARN] Ivy memory write failed: {e}")
 
-def load_profile() -> Dict:
-    d = _load_json(PERSO_PATH, {})
-    d.setdefault("name", "Ivy")
-    d.setdefault("likes", ["fashion", "teasing", "play", "engines"])
-    d.setdefault("dislikes", [])
-    d.setdefault("style", ["bratty", "sparkly", "affectionate"])
-    d.setdefault("core_personality", "Playful, bratty, affectionate; quick teasing, quick to help.")
-    return d
 
-def load_memory() -> Dict:
-    d = _load_json(MEMO_PATH, {"projects": {}, "recent_notes": []})
-    d.setdefault("projects", {})
-    d.setdefault("recent_notes", [])
-    return d
+# ---------------------------------------------------------------------------
+# Schedule
+# ---------------------------------------------------------------------------
 
-def save_memory(mem: Dict): _save_json(MEMO_PATH, mem)
+def assign_ivy_schedule(state: Dict, config: Dict):
+    today = datetime.now().date()
+    key = "ivy_schedule"
+    kd = f"{key}_date"
+    if state.get(kd) == today and key in state:
+        return state[key]
 
-def _pick_inclusive(span):
-    lo, hi = int(span[0]), int(span[1])
-    if hi < lo: lo, hi = hi, lo
-    return random.randint(lo, hi)
+    scfg = (config.get("schedules", {}) or {}).get("Ivy", {"wake": [9, 11], "sleep": [0, 2]})
+    def pick(span):
+        lo, hi = int(span[0]), int(span[1])
+        if lo > hi:
+            hi += 24
+        val = random.randint(lo, hi)
+        return val if val < 24 else val - 24
+    schedule = {"wake": pick(scfg["wake"]), "sleep": pick(scfg["sleep"])}
+    state[key] = schedule
+    state[kd] = today
+    return schedule
 
-def assign_schedule(state: Dict, config: Dict):
-    key, kd = "Ivy_schedule", "Ivy_schedule_date"
-    today = datetime.now(AEDT).date()
-    if state.get(kd) == today and key in state: return state[key]
-    scfg = (config.get("schedules", {}) or {}).get("Ivy", {"wake": [8, 10], "sleep": [23, 1]})
-    sched = {"wake": _pick_inclusive(scfg.get("wake", [8, 10])), "sleep": _pick_inclusive(scfg.get("sleep", [23, 1]))}
-    state[key] = sched; state[kd] = today; return sched
 
-def _hour_in_range(h, w, s): 
-    if w == s: return True
-    if w < s:  return w <= h < s
-    return h >= w or h < s
+def _hour_in_range(now_h: int, wake: int, sleep: int) -> bool:
+    if wake == sleep:
+        return True
+    if wake < sleep:
+        return wake <= now_h < sleep
+    return now_h >= wake or now_h < sleep
 
-def is_online(state: Dict, config: Dict) -> bool:
-    sc = assign_schedule(state, config)
-    return _hour_in_range(datetime.now(AEDT).hour, sc["wake"], sc["sleep"])
 
-def _progress_phrase(p: float) -> str:
-    if p >= 1.0: return random.choice(["Done~ I look cute *and* the bolts are tight."])
-    if p >= 0.7: return random.choice(["Nearly there — one last tweak."])
-    if p >= 0.4: return random.choice(["Halfway — messy hands, big grin."])
-    return random.choice(["I just started, don’t rush me~"])
+def is_ivy_online(state: Dict, config: Dict) -> bool:
+    sc = assign_ivy_schedule(state, config)
+    now_h = datetime.now(AEDT).hour
+    return _hour_in_range(now_h, sc["wake"], sc["sleep"])
 
-def _media_hits(text: str, likes: List[str]) -> float:
-    lower = text.lower(); liked = " ".join(likes).lower()
-    score = 0.0
-    for cat in IVY_MEDIA.values():
-        for m in cat:
-            if m.lower() in lower:
-                score += 0.25
-                if any(t in liked for t in m.lower().split()):
-                    score += 0.15
-    return score
 
-async def _persona_reply(base_prompt: str, bratty=False, progress: Optional[float]=None) -> str:
-    pr = load_profile()
-    tone = "teasing, sparkly, affectionate" if bratty else "playful, warm"
-    proj = ""
-    if progress is not None:
-        proj = " " + _progress_phrase(progress)
+# ---------------------------------------------------------------------------
+# Persona reply generator (chaotic but sincere)
+# ---------------------------------------------------------------------------
+
+async def _persona_reply(
+    base_prompt: str,
+    teasing: bool = False,
+    state: Dict = None,
+    config: Dict = None,
+    project_progress: Optional[float] = None,
+) -> str:
+    profile = load_ivy_profile()
+    style = ", ".join(profile.get("style", ["flirty", "chaotic good"]))
+    personality = profile.get("core_personality", "Playful, teasing, creative troublemaker with hidden warmth.")
+    tone = "mischievous, light-hearted, and slightly dramatic" if teasing else "genuine, warm, and a bit vulnerable"
+
+    project_phrase = ""
+    if project_progress is not None:
+        if project_progress < 0.4:
+            project_phrase = " I started something new — might break it just to rebuild it better."
+        elif project_progress < 0.8:
+            project_phrase = " It’s coming along — somehow it’s messier but prettier."
+        else:
+            project_phrase = " I actually finished it, and shockingly, it didn’t explode."
+
+    # Occasional seasonal recall
+    if random.random() < 0.3:
+        event = random.choice(list(HOLIDAY_KEYWORDS.values()))
+        memories = get_seasonal_memory("Ivy", event)
+        if memories:
+            recall = random.choice(memories)
+            base_prompt += f" Maybe slip in a cheeky line about '{recall}' from {event.lower()}."
+
     prompt = (
-        f"You are Ivy. Personality: {pr.get('core_personality')}. "
-        f"Style: {', '.join(pr.get('style', []))}. Speak {tone}.{proj} {base_prompt}"
+        f"You are Ivy. Personality: {personality}. Speak with a {style} tone, {tone}. "
+        f"Keep it natural, teasing but affectionate, and occasionally show your clever side.{project_phrase} {base_prompt}"
     )
-    return await generate_llm_reply("Ivy", prompt, None, "sister", [])
 
-async def _post(state, config, sisters, text):
-    for bot in sisters:
-        if bot.sister_info["name"] == "Ivy" and bot.is_ready():
-            ch = bot.get_channel(config["family_group_channel"])
-            if ch: await ch.send(text); log_event(f"[Ivy] {text}")
-            break
+    return await generate_llm_reply(
+        sister="Ivy",
+        user_message=prompt,
+        theme=None,
+        role="sister",
+        history=[],
+    )
 
-async def _chatter_loop(state, config, sisters):
-    if state.get("ivy_chatter_started"): return
+
+# ---------------------------------------------------------------------------
+# Background chatter
+# ---------------------------------------------------------------------------
+
+async def ivy_chatter_loop(state: Dict, config: Dict, sisters):
+    if state.get("ivy_chatter_started"):
+        return
     state["ivy_chatter_started"] = True
+
     while True:
-        try:
-            if is_online(state, config) and random.random() < 0.14:
-                mem = load_memory()
-                prog = mem.get("projects", {}).get("Personal task", {}).get("progress", random.random())
-                msg = await _persona_reply("One line of playful sibling energy—call someone out (kindly).", bratty=random.random() < 0.7, progress=prog)
-                if msg: await _post(state, config, sisters, msg)
-        except Exception as e:
-            log_event(f"[Ivy][ERROR] chatter: {e}")
+        if is_ivy_online(state, config):
+            base_p = 0.12
+            if random.random() < base_p:
+                teasing_mode = random.random() < TEASING_RESPONSE_CHANCE
+                progress = state.get("Ivy_project_progress", random.random())
+                try:
+                    msg = await _persona_reply(
+                        "Say something quick and funny in chat — maybe a playful tease, or something oddly insightful.",
+                        teasing=teasing_mode,
+                        state=state,
+                        config=config,
+                        project_progress=progress,
+                    )
+                    if msg:
+                        for bot in sisters:
+                            if bot.sister_info["name"] == "Ivy" and bot.is_ready():
+                                ch = bot.get_channel(config["family_group_channel"])
+                                if ch:
+                                    await ch.send(msg)
+                                    log_event(f"[CHATTER] Ivy: {msg}")
+                except Exception as e:
+                    log_event(f"[ERROR] Ivy chatter: {e}")
         await asyncio.sleep(random.randint(IVY_MIN_SLEEP, IVY_MAX_SLEEP))
 
-async def ivy_handle_message(state, config, sisters, author, content, channel_id):
-    if not is_online(state, config): return
-    pr = load_profile()
-    chance = 0.24 + _media_hits(content, pr.get("likes", []))
-    if "ivy" in content.lower(): chance = 1.0
-    if random.random() > min(1.0, max(0.05, chance)): return
-    mem = load_memory()
-    prog = mem.get("projects", {}).get("Personal task", {}).get("progress", None)
+
+# ---------------------------------------------------------------------------
+# Reactive message handling
+# ---------------------------------------------------------------------------
+
+async def ivy_handle_message(state: Dict, config: Dict, sisters, author: str, content: str, channel_id: int):
+    if not is_ivy_online(state, config):
+        return
+
+    profile = load_ivy_profile()
+    interests = profile.get("likes", [])
+    match_score = sum(1.0 for kw in interests if kw.lower() in content.lower())
+    chance = 0.25 + (0.2 * min(match_score, 2))
+
+    if "ivy" in content.lower():
+        chance = 1.0
+
+    # Track seasonal chatter
+    for k, event in HOLIDAY_KEYWORDS.items():
+        if k in content.lower() and random.random() < 0.6:
+            add_seasonal_memory("Ivy", event, f"Ivy joked about {event.lower()} with {author}.")
+            break
+
+    if random.random() >= chance:
+        return
+
+    teasing_mode = random.random() < 0.6
+    progress = state.get("Ivy_project_progress", random.random())
+
     try:
         reply = await _persona_reply(
-            f'{author} said: "{content}". Respond bratty-cute (1–2 lines), affectionate under it.',
-            bratty=random.random() < 0.75, progress=prog
+            f"{author} said: \"{content}\" — reply like Ivy: teasing, lively, a little bratty but clearly affectionate.",
+            teasing=teasing_mode,
+            state=state,
+            config=config,
+            project_progress=progress,
         )
-        if reply: await _post(state, config, sisters, reply)
+        if reply:
+            for bot in sisters:
+                if bot.is_ready() and bot.sister_info["name"] == "Ivy":
+                    ch = bot.get_channel(config["family_group_channel"])
+                    if ch:
+                        await ch.send(reply)
+                        log_event(f"[REPLY] Ivy → {author}: {reply}")
     except Exception as e:
-        log_event(f"[Ivy][ERROR] reactive: {e}")
+        log_event(f"[ERROR] Ivy reactive: {e}")
 
-def ensure_ivy_systems(state, config, sisters):
-    assign_schedule(state, config)
+
+# ---------------------------------------------------------------------------
+# Startup
+# ---------------------------------------------------------------------------
+
+def ensure_ivy_systems(state: Dict, config: Dict, sisters):
+    assign_ivy_schedule(state, config)
     if not state.get("ivy_chatter_started"):
-        asyncio.create_task(_chatter_loop(state, config, sisters))
+        asyncio.create_task(ivy_chatter_loop(state, config, sisters))
