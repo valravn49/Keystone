@@ -4,6 +4,7 @@
   "symbol": "🪞",
   "core_personality": "Playful, chaotic, and creative, yet remarkably skilled when focused. She lives in color, texture, and contrast — one moment styling an outfit, the next covered in grease fixing a scooter. Her energy comes from reinvention and rebellion.",
   "essence": "Unfiltered creation — beauty in motion, rules bent for art.",
+  "behavior_traits": ["impulsive", "teasing", "creative", "clever under pressure"],
   "likes": [
     "Fashion experiments and bold color palettes",
     "Mechanical tinkering and fixing engines",
@@ -19,6 +20,18 @@
     "Cold weather (and cold colors)",
     "Quiet without purpose"
   ],
+  "media_preferences": {
+    "games": ["Zenless Zone Zero", "NieR: Automata", "Mirror’s Edge"],
+    "music": ["Nerdcore", "Electropop", "Alternative rock"],
+    "anime": ["ID:Invaded", "Kill la Kill", "Darling in the FranXX"],
+    "shows": ["RWBY", "The Rookie", "She-Ra and the Princesses of Power"]
+  },
+  "interaction_affinity": {
+    "Aria": {"affection": 0.8, "respect": 0.7, "teasing": 0.55},
+    "Selene": {"affection": 0.85, "respect": 0.75, "teasing": 0.4},
+    "Cassandra": {"affection": 0.6, "respect": 0.7, "teasing": 0.7},
+    "Will": {"affection": 0.9, "respect": 0.8, "teasing": 0.45}
+  },
   "speech_examples": [
     "Don’t look at me like that — it’s nail polish, not paint! …okay maybe both.",
     "The scooter’s purring again. I might’ve overdecorated it though.",
