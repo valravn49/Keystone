@@ -1,38 +1,27 @@
-import os
-import json
-import random
-import asyncio
+import os, json, random, asyncio
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 import pytz
 
 from llm import generate_llm_reply
 from logger import log_event
-from Autonomy.behaviors.memory_helpers import get_seasonal_memory, add_seasonal_memory
 
-# ---------------------------------------------------------------------------
-# Paths and constants
-# ---------------------------------------------------------------------------
+# ---------- Paths ----------
+PERSONALITY_JSON = "/Autonomy/personalities/Aria_Personality.json"
+MEMORY_JSON      = "/Autonomy/memory/Aria_Memory.json"
 
-ARIA_PERSONALITY_JSON = "/Autonomy/personalities/Aria_Personality.json"
-ARIA_MEMORY_JSON = "/Autonomy/memory/Aria_Memory.json"
+# ---------- Timezone ----------
 AEDT = pytz.timezone("Australia/Sydney")
 
-ARIA_MIN_SLEEP = 45 * 60
-ARIA_MAX_SLEEP = 110 * 60
-THOUGHTFUL_RESPONSE_CHANCE = 0.25
+# ---------- Pacing ----------
+MIN_SLEEP = 50 * 60
+MAX_SLEEP = 120 * 60
 
-HOLIDAY_KEYWORDS = {
-    "halloween": "Halloween",
-    "christmas": "Christmas",
-    "new year": "New Year",
-    "valentine": "Valentine's Day",
-}
+# ---------- Tone/weights ----------
+THOUGHTFUL_CHANCE = 0.30
+MEDIA_MENTION_BASE = 0.18  # light media flavor only
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
+# ---------- JSON helpers ----------
 def _load_json(path: str, default: dict) -> dict:
     try:
         if os.path.exists(path):
@@ -42,203 +31,156 @@ def _load_json(path: str, default: dict) -> dict:
         log_event(f"[WARN] Aria JSON read failed {path}: {e}")
     return default
 
-
-def load_aria_profile() -> Dict:
-    profile = _load_json(ARIA_PERSONALITY_JSON, {})
-    profile.setdefault("interests", ["organization", "craft", "electronics", "books"])
-    profile.setdefault("style", ["structured", "gentle", "reflective"])
-    return profile
-
-
-def load_aria_memory() -> Dict:
-    mem = _load_json(ARIA_MEMORY_JSON, {"projects": {}, "recent_notes": [], "seasonal_memory": {}})
-    mem.setdefault("projects", {})
-    mem.setdefault("recent_notes", [])
-    mem.setdefault("seasonal_memory", {})
-    return mem
-
-
-def save_aria_memory(mem: Dict):
+def _save_json(path: str, data: dict):
     try:
-        os.makedirs(os.path.dirname(ARIA_MEMORY_JSON), exist_ok=True)
-        with open(ARIA_MEMORY_JSON, "w", encoding="utf-8") as f:
-            json.dump(mem, f, ensure_ascii=False, indent=2)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        log_event(f"[WARN] Aria memory write failed: {e}")
+        log_event(f"[WARN] Aria JSON write failed {path}: {e}")
 
+def load_profile() -> Dict:
+    d = _load_json(PERSONALITY_JSON, {})
+    d.setdefault("style", ["structured", "gentle", "reflective"])
+    d.setdefault("likes", [])
+    d.setdefault("dislikes", [])
+    d.setdefault("media", {})
+    return d
 
-# ---------------------------------------------------------------------------
-# Schedule
-# ---------------------------------------------------------------------------
+def load_memory() -> Dict:
+    d = _load_json(MEMORY_JSON, {"projects": {}, "recent_notes": []})
+    d.setdefault("projects", {})
+    d.setdefault("recent_notes", [])
+    return d
 
-def assign_aria_schedule(state: Dict, config: Dict):
-    today = datetime.now().date()
-    key = "aria_schedule"
-    kd = f"{key}_date"
+def save_memory(mem: Dict):
+    _save_json(MEMORY_JSON, mem)
+
+# ---------- Schedule / Awake ----------
+def _pick_hour(span: List[int]) -> int:
+    lo, hi = int(span[0]), int(span[1])
+    if hi < lo:
+        lo, hi = hi, lo
+    return random.randint(lo, hi)
+
+def assign_schedule(state: Dict, config: Dict):
+    today = datetime.now(AEDT).date()
+    key, kd = "aria_schedule", "aria_schedule_date"
     if state.get(kd) == today and key in state:
         return state[key]
-
-    scfg = (config.get("schedules", {}) or {}).get("Aria", {"wake": [6, 8], "sleep": [22, 23]})
-    def pick(span):
-        lo, hi = int(span[0]), int(span[1])
-        if lo > hi:  # handle wrap-around times
-            hi += 24
-        val = random.randint(lo, hi)
-        return val if val < 24 else val - 24
-    schedule = {"wake": pick(scfg["wake"]), "sleep": pick(scfg["sleep"])}
-    state[key] = schedule
-    state[kd] = today
+    c = (config.get("schedules", {}) or {}).get("Aria", {"wake":[6,8], "sleep":[22,23]})
+    schedule = {"wake": _pick_hour(c.get("wake",[6,8])), "sleep": _pick_hour(c.get("sleep",[22,23]))}
+    state[key], state[kd] = schedule, today
     return schedule
 
-
 def _hour_in_range(now_h: int, wake: int, sleep: int) -> bool:
-    if wake == sleep:
-        return True
-    if wake < sleep:
-        return wake <= now_h < sleep
+    if wake == sleep: return True
+    if wake < sleep:  return wake <= now_h < sleep
     return now_h >= wake or now_h < sleep
 
-
-def is_aria_online(state: Dict, config: Dict) -> bool:
-    sc = assign_aria_schedule(state, config)
+def is_online(state: Dict, config: Dict) -> bool:
+    sc = assign_schedule(state, config)
     now_h = datetime.now(AEDT).hour
     return _hour_in_range(now_h, sc["wake"], sc["sleep"])
 
+# ---------- Small helpers ----------
+def _media_pool_from_profile(profile: Dict) -> List[str]:
+    media = profile.get("media", {})
+    out = []
+    for v in media.values():
+        if isinstance(v, list): out.extend(v)
+    return out
 
-# ---------------------------------------------------------------------------
-# Persona reply generator with seasonal memory recall
-# ---------------------------------------------------------------------------
+def _media_mentions_in(text: str, pool: List[str]) -> List[str]:
+    t = text.lower()
+    hits = []
+    for m in pool:
+        if m.lower() in t:
+            hits.append(m)
+    return list(set(hits))
 
-async def _persona_reply(
-    base_prompt: str,
-    reflective: bool = False,
-    state: Dict = None,
-    config: Dict = None,
-    project_progress: Optional[float] = None,
-) -> str:
-    profile = load_aria_profile()
+def _post_to_family(msg: str, sisters, config: Dict, who="Aria"):
+    for bot in sisters:
+        if bot.sister_info["name"] == who and bot.is_ready():
+            ch = bot.get_channel(config["family_group_channel"])
+            if ch:
+                return asyncio.create_task(ch.send(msg))
+
+# ---------- Persona reply ----------
+async def _persona_reply(base_prompt: str, thoughtful: bool, project_progress: Optional[float]) -> str:
+    profile = load_profile()
     style = ", ".join(profile.get("style", ["structured", "gentle"]))
-    personality = profile.get("core_personality", "Calm, methodical, detail-oriented but warm.")
-    tone = "quietly thoughtful and deliberate" if reflective else "soft, concise, and lightly teasing"
-
-    project_phrase = ""
+    tone = "quietly thoughtful and deliberate" if thoughtful else "soft, concise, lightly teasing (dry wit allowed)"
+    proj = ""
     if project_progress is not None:
         if project_progress < 0.4:
-            project_phrase = " My project’s still early, just sketching ideas out."
+            proj = " Your project is still early; you’re sketching plans and tidying inputs."
         elif project_progress < 0.8:
-            project_phrase = " It’s coming together piece by piece — slow, but neat."
+            proj = " It’s mid-way and steady — small corrections, precise notes."
         else:
-            project_phrase = " Almost done; I keep adjusting the smallest details."
-
-    # 25% chance of seasonal memory recall
-    if random.random() < 0.25:
-        event = random.choice(list(HOLIDAY_KEYWORDS.values()))
-        memories = get_seasonal_memory("Aria", event)
-        if memories:
-            recall = random.choice(memories)
-            base_prompt += f" Maybe recall '{recall}' as if reminiscing naturally about {event.lower()}."
-
+            proj = " Almost done; you keep refining edges and alignment."
     prompt = (
-        f"You are Aria. Personality: {personality}. Speak with a {style} tone, {tone}. "
-        f"Keep it minimal, warm, and realistic.{project_phrase} {base_prompt}"
+        f"You are Aria. Style: {style}. Speak with {tone}. Avoid rambling; prefer clear, grounded lines."
+        f"{proj} {base_prompt}"
     )
-
     return await generate_llm_reply(
-        sister="Aria",
-        user_message=prompt,
-        theme=None,
-        role="sister",
-        history=[],
+        sister="Aria", user_message=prompt, theme=None, role="sister", history=[]
     )
 
-
-# ---------------------------------------------------------------------------
-# Background chatter loop
-# ---------------------------------------------------------------------------
-
+# ---------- Chatter loop ----------
 async def aria_chatter_loop(state: Dict, config: Dict, sisters):
-    if state.get("aria_chatter_started"):
-        return
+    if state.get("aria_chatter_started"): return
     state["aria_chatter_started"] = True
-
     while True:
-        if is_aria_online(state, config):
-            base_p = 0.08
-            if random.random() < base_p:
-                reflective_mode = random.random() < THOUGHTFUL_RESPONSE_CHANCE
-                progress = state.get("Aria_project_progress", random.random())
-                try:
-                    msg = await _persona_reply(
-                        "Share a calm group-chat comment — something practical or gently observant.",
-                        reflective=reflective_mode,
-                        state=state,
-                        config=config,
-                        project_progress=progress,
-                    )
-                    if msg:
-                        for bot in sisters:
-                            if bot.sister_info["name"] == "Aria" and bot.is_ready():
-                                ch = bot.get_channel(config["family_group_channel"])
-                                if ch:
-                                    await ch.send(msg)
-                                    log_event(f"[CHATTER] Aria: {msg}")
-                except Exception as e:
-                    log_event(f"[ERROR] Aria chatter: {e}")
-        await asyncio.sleep(random.randint(ARIA_MIN_SLEEP, ARIA_MAX_SLEEP))
+        if is_online(state, config) and random.random() < 0.08:
+            try:
+                msg = await _persona_reply(
+                    "Share one calm observation or small plan for the day.",
+                    thoughtful=(random.random() < THOUGHTFUL_CHANCE),
+                    project_progress=state.get("Aria_project_progress", random.random()),
+                )
+                if msg: _post_to_family(msg, sisters, config, "Aria"); log_event(f"[CHATTER] Aria: {msg}")
+            except Exception as e:
+                log_event(f"[ERROR] Aria chatter: {e}")
+        await asyncio.sleep(random.randint(MIN_SLEEP, MAX_SLEEP))
 
-
-# ---------------------------------------------------------------------------
-# Reactive handler (conversation-level)
-# ---------------------------------------------------------------------------
-
+# ---------- Reactive handler ----------
 async def aria_handle_message(state: Dict, config: Dict, sisters, author: str, content: str, channel_id: int):
-    if not is_aria_online(state, config):
-        return
+    if not is_online(state, config): return
+    profile = load_profile()
 
-    profile = load_aria_profile()
-    interests = profile.get("likes", [])
-    match_score = sum(1.0 for kw in interests if kw.lower() in content.lower())
+    # Base chance + small boost if content touches Aria's interests/media
+    base = 0.18
+    likes = profile.get("likes", [])
+    if any(k.lower() in content.lower() for k in likes): base += 0.12
 
-    chance = 0.18 + (0.2 * min(match_score, 2))
-    if "aria" in content.lower():
-        chance = 1.0
+    media_pool = _media_pool_from_profile(profile)
+    media_hits = _media_mentions_in(content, media_pool)
+    if media_hits: base += 0.10
 
-    # Detect seasonal keyword and store memory
-    for k, event in HOLIDAY_KEYWORDS.items():
-        if k in content.lower() and random.random() < 0.5:
-            add_seasonal_memory("Aria", event, f"Aria talked about {event.lower()} with {author}.")
-            break
+    if "aria" in content.lower(): base = 1.0
+    if random.random() >= min(0.95, base): return
 
-    if random.random() >= chance:
-        return
+    # Gentle stagger
+    await asyncio.sleep(random.randint(3, 10))
 
-    reflective_mode = random.random() < 0.5
-    progress = state.get("Aria_project_progress", random.random())
+    # Light media weaving: only sometimes, keep it subtle
+    media_hint = ""
+    if media_hits and random.random() < MEDIA_MENTION_BASE:
+        media_hint = f" If natural, reference {random.choice(media_hits)} very briefly."
 
-    try:
-        reply = await _persona_reply(
-            f"{author} said: \"{content}\" — respond naturally, patient but playful, like a steady older sister.",
-            reflective=reflective_mode,
-            state=state,
-            config=config,
-            project_progress=progress,
-        )
-        if reply:
-            for bot in sisters:
-                if bot.is_ready() and bot.sister_info["name"] == "Aria":
-                    ch = bot.get_channel(config["family_group_channel"])
-                    if ch:
-                        await ch.send(reply)
-                        log_event(f"[REPLY] Aria → {author}: {reply}")
-    except Exception as e:
-        log_event(f"[ERROR] Aria reactive: {e}")
+    msg = await _persona_reply(
+        f'{author} said: "{content}". Respond naturally as a calm, meticulous older sister.{media_hint} '
+        f"Prefer practical, present-moment comments over book references.",
+        thoughtful=(random.random() < 0.5),
+        project_progress=state.get("Aria_project_progress", random.random()),
+    )
+    if msg:
+        _post_to_family(msg, sisters, config, "Aria")
+        log_event(f"[REPLY] Aria → {author}: {msg}")
 
-
-# ---------------------------------------------------------------------------
-# Startup hook
-# ---------------------------------------------------------------------------
-
+# ---------- Startup ----------
 def ensure_aria_systems(state: Dict, config: Dict, sisters):
-    assign_aria_schedule(state, config)
+    assign_schedule(state, config)
     if not state.get("aria_chatter_started"):
         asyncio.create_task(aria_chatter_loop(state, config, sisters))
