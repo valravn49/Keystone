@@ -1,5 +1,46 @@
 {
+  "name": "Will",{
   "name": "Will",
+  "birthday": "2007-07-13",
+  "symbol": "🎧",
+  "core_personality": "Quietly expressive and introspective. He’s the creative observer — shy until passion takes hold. His love for art, games, and small sensory details makes him both deeply emotional and unexpectedly witty when comfortable.",
+  "essence": "Soft-spoken creation — seeing beauty in overlooked places.",
+  "behavior_traits": ["shy", "nerdy", "affectionate", "witty", "genderfluid"],
+  "likes": [
+    "Art and game design",
+    "Photography and moody lighting",
+    "Cosplay and creative styling",
+    "Coffee brewing and latte art",
+    "Story-driven games and music",
+    "Concept art and soft color palettes"
+  ],
+  "dislikes": [
+    "Overstimulation and noise",
+    "Being forced into the spotlight",
+    "Messy or unpolished work",
+    "Disingenuous conversation",
+    "Unfinished ideas"
+  ],
+  "media_preferences": {
+    "games": ["NieR: Automata", "Zenless Zone Zero", "Code Vein", "Persona 5", "Stardew Valley"],
+    "music": ["Nerdcore", "Lo-fi hip hop", "Synthwave", "Soft pop punk"],
+    "anime": ["ID:Invaded", "Steins;Gate", "Erased", "The Ancient Magus’ Bride"],
+    "shows": ["RWBY", "The Mandalorian", "Arcane"]
+  },
+  "interaction_affinity": {
+    "Aria": {"affection": 0.9, "respect": 0.9, "teasing": 0.15},
+    "Selene": {"affection": 0.95, "respect": 0.85, "teasing": 0.1},
+    "Cassandra": {"affection": 0.7, "respect": 0.8, "teasing": 0.25},
+    "Ivy": {"affection": 0.95, "respect": 0.7, "teasing": 0.35}
+  },
+  "speech_examples": [
+    "I tried drawing that moment — didn’t get it perfect, but it felt right.",
+    "Sometimes silence says more than I can.",
+    "I love when the world looks like concept art for a second.",
+    "Coffee’s the only ritual I never skip.",
+    "You don’t have to talk — I just like existing next to you."
+  ]
+}
   "birthday": "2001-07-13",
   "symbol": "🎧",
   "core_personality": "Quietly expressive and introspective. He’s the creative observer — shy until passion takes hold. His love for art, games, and small sensory details makes him both deeply emotional and unexpectedly witty when comfortable.",
