@@ -40,7 +40,10 @@ from Autonomy.behaviors.will_behavior import (
 )
 
 # ---- Shared helpers ---------------------------------------------------------
-from shared_context import get_today_rotation, advance_rotation, get_current_theme
+from Autonomy.state_manager import (
+    state, load_state, save_state,
+    get_today_rotation, advance_rotation, get_current_theme
+)
 
 # ---- Fitness & food ---------------------------------------------------------
 #   We defensively support a few likely function names so you don't need to refactor nutrition.py/workouts.py
