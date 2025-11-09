@@ -12,7 +12,6 @@ data = {
     "targets": {"weight_loss": 1800, "maintenance": 2200}
 }
 
-
 def _load_data():
     global data
     if os.path.exists(DATA_FILE):
@@ -26,11 +25,9 @@ def _load_data():
                 "targets": {"weight_loss": 1800, "maintenance": 2200}
             }
 
-
 def _save_data():
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
-
 
 def log_food_entry(user: str, food: str, calories: int):
     entry = {
@@ -42,7 +39,6 @@ def log_food_entry(user: str, food: str, calories: int):
     data["food_log"].append(entry)
     _save_data()
     return entry
-
 
 def log_workout_completion(user: str, workout_name: str, duration: int):
     if not validate_workout(workout_name):
@@ -59,13 +55,11 @@ def log_workout_completion(user: str, workout_name: str, duration: int):
     _save_data()
     return calories_burned
 
-
 def set_calorie_targets(weight_loss: int, maintenance: int):
     data["targets"] = {"weight_loss": weight_loss, "maintenance": maintenance}
     _save_data()
 
-
-def get_daily_summary():
+def summarize_daily_nutrition():
     today = datetime.now().date()
     food_today = [f for f in data["food_log"] if datetime.fromisoformat(f["timestamp"]).date() == today]
     workout_today = [w for w in data["workout_log"] if datetime.fromisoformat(w["timestamp"]).date() == today]
@@ -82,7 +76,6 @@ def get_daily_summary():
         f"- Targets → Loss: {data['targets']['weight_loss']}, Maintenance: {data['targets']['maintenance']}"
     )
     return summary
-
 
 # Ensure data file is loaded at startup
 _load_data()
