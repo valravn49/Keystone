@@ -86,7 +86,7 @@ SEASONAL_MODS = {
 # -------------------------------------------------------------------
 # Outfit generation
 # -------------------------------------------------------------------
-async def generate_and_post_daily_outfits(sisters, config):
+async def generate_and_post_outfits(sisters, config):
     """Generate and post each sibling's outfit image for the day."""
     now = datetime.now(AEDT)
     month = now.month
