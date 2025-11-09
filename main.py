@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from logger import log_event
 from Autonomy.state_manager import state, load_state, save_state
 from workouts import get_today_workout
-from nutrition import get_daily_summary as summarize_daily_nutrition
+from nutrition import summarize_daily_nutrition
 from image_utils import generate_and_post_daily_outfits
 
 # ---------------------------------------------------------------------------
