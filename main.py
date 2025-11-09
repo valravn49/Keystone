@@ -12,7 +12,7 @@ from logger import log_event
 from Autonomy.state_manager import state, load_state, save_state
 from workouts import get_today_workout
 from nutrition import summarize_daily_nutrition
-from image_utils import generate_and_post_daily_outfits
+from image_utils import generate_and_post_outfits
 
 # ---------------------------------------------------------------------------
 # Load config
