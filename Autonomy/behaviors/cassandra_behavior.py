@@ -1,132 +1,140 @@
-import os, json, random, asyncio
+import random, asyncio, os, json
 from datetime import datetime
-from typing import Dict, Optional, List
-import pytz
+from typing import Dict, Optional
 
 from llm import generate_llm_reply
 from logger import log_event
+from shared_context import (
+    recall_or_enrich_prompt,
+    remember_after_exchange,
+    get_media_reference,
+    craft_media_reaction,
+)
 
-PERSONALITY_JSON = "/Autonomy/personalities/Cassandra_Personality.json"
-MEMORY_JSON      = "/Autonomy/memory/Cassandra_Memory.json"
-AEDT = pytz.timezone("Australia/Sydney")
+CASS_PERSONALITY_JSON = "/Autonomy/personalities/Cassandra_Personality.json"
 
-MIN_SLEEP = 40 * 60
-MAX_SLEEP = 100 * 60
-MEDIA_MENTION_BASE = 0.18
+CASS_MIN_SLEEP = 40 * 60
+CASS_MAX_SLEEP = 90 * 60
 
-def _load_json(p, d):
+NICKNAMES = {
+    "Aria": ["Aria","Ari"], "Selene": ["Selene","Luna"],
+    "Cassandra": ["Cassandra","Cass","Cassie"], "Ivy": ["Ivy","Vy"], "Will": ["Will","Willow"]
+}
+def _pick_name(t): 
+    ns=NICKNAMES.get(t,[t]); 
+    return random.choice(ns) if random.random()<0.35 else t
+
+def _load_json(path: str, default: dict)->dict:
     try:
-        if os.path.exists(p):
-            with open(p,"r",encoding="utf-8") as f: return json.load(f)
-    except Exception as e: log_event(f"[WARN] Cass JSON read failed {p}: {e}")
-    return d
+        if os.path.exists(path):
+            with open(path,"r",encoding="utf-8") as f: return json.load(f)
+    except Exception as e:
+        log_event(f"[WARN] Cass JSON read failed {path}: {e}")
+    return default
 
-def _save_json(p, d):
-    try:
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p,"w",encoding="utf-8") as f: json.dump(d,f,ensure_ascii=False,indent=2)
-    except Exception as e: log_event(f"[WARN] Cass JSON write failed {p}: {e}")
+def load_cass_profile()->Dict:
+    p=_load_json(CASS_PERSONALITY_JSON,{})
+    p.setdefault("style",["disciplined","confident","concise"])
+    p.setdefault("core_personality","Disciplined and composed; blunt but fair; action first.")
+    return p
 
-def load_profile()->Dict:
-    d=_load_json(PERSONALITY_JSON,{})
-    d.setdefault("style", ["precise","composed","intense"])
-    d.setdefault("likes", [])
-    d.setdefault("media", {})
-    return d
-
-def load_memory()->Dict:
-    d=_load_json(MEMORY_JSON, {"projects": {}, "recent_notes": []})
-    d.setdefault("projects", {}); d.setdefault("recent_notes", [])
-    return d
-
-def save_memory(mem: Dict): _save_json(MEMORY_JSON, mem)
-
-def _pick_hour(span):
-    lo, hi = int(span[0]), int(span[1])
-    if hi < lo: lo, hi = hi, lo
-    return random.randint(lo, hi)
-
-def assign_schedule(state: Dict, config: Dict):
-    today = datetime.now(AEDT).date()
-    key,kd="cass_schedule","cass_schedule_date"
+def assign_cass_schedule(state: Dict, config: Dict):
+    today=datetime.now().date()
+    key="cass_schedule"; kd=f"{key}_date"
     if state.get(kd)==today and key in state: return state[key]
-    c=(config.get("schedules",{}) or {}).get("Cassandra",{"wake":[6,8],"sleep":[22,23]})
-    s={"wake":_pick_hour(c.get("wake",[6,8])),"sleep":_pick_hour(c.get("sleep",[22,23]))}
-    state[key]=s; state[kd]=today; return s
+    scfg=(config.get("schedules",{}) or {}).get("Cassandra", {"wake":[5,7],"sleep":[21,23]})
+    def pick(span):
+        lo, hi = int(span[0]), int(span[1])
+        if hi < lo: lo, hi = hi, lo
+        return random.randint(lo, hi)
+    schedule={"wake":pick(scfg["wake"]), "sleep":pick(scfg["sleep"])}
+    state[key]=schedule; state[kd]=today; return schedule
 
-def _hour_in_range(h,w,s):
-    if w==s: return True
-    if w<s:  return w<=h<s
+def _hr_in(h,w,s):
+    if w==s:return True
+    if w<s: return w<=h<s
     return h>=w or h<s
 
-def is_online(state, config)->bool:
-    sc=assign_schedule(state, config); now_h=datetime.now(AEDT).hour
-    return _hour_in_range(now_h, sc["wake"], sc["sleep"])
+def is_cass_online(state,config)->bool:
+    sc=assign_cass_schedule(state,config)
+    return _hr_in(datetime.now().hour, sc["wake"], sc["sleep"])
 
-def _pool(profile):
-    out=[]; m=profile.get("media",{})
-    for v in m.values():
-        if isinstance(v,list): out.extend(v)
-    return out
+async def _persona_reply(base_prompt: str, address_to: Optional[str]=None)->str:
+    p=load_cass_profile()
+    style=", ".join(p.get("style",["disciplined","concise"]))
+    personality=p.get("core_personality","Disciplined and composed; blunt but fair.")
+    who=_pick_name(address_to) if address_to else None
+    prefix=f"Speak directly to {who} by name. " if who else ""
+    prompt=(
+        f"You are Cassandra. Personality: {personality}. Speak in a {style} style — assertive, clean, no fluff, but not cruel. "
+        f"{prefix}Only first-person. Keep it short and actionable. {base_prompt}"
+    )
+    return await generate_llm_reply("Cassandra", prompt, None, "sister", [])
 
-def _hits(text,pool):
-    t=text.lower(); res=[]
-    for m in pool:
-        if m.lower() in t: res.append(m)
-    return list(set(res))
-
-def _post(msg, sisters, config, who="Cassandra"):
-    for bot in sisters:
-        if bot.sister_info["name"]==who and bot.is_ready():
-            ch=bot.get_channel(config["family_group_channel"])
-            if ch: return asyncio.create_task(ch.send(msg))
-
-async def _persona_reply(base: str, assertive: bool, project_progress: Optional[float]):
-    style = "crisp, concise, confident; a little scolding if needed" if assertive else "precise but supportive; warm edge kept minimal"
-    proj=""
-    if project_progress is not None:
-        if project_progress<0.4: proj=" Your routine is building; fundamentals first."
-        elif project_progress<0.8: proj=" Mid-cycle; consistency over intensity."
-        else: proj=" Final phase; polishing form and pace."
-    prompt=(f"You are Cassandra. Speak with {style}. Keep lines short; avoid fluff.{proj} {base}")
-    return await generate_llm_reply(sister="Cassandra", user_message=prompt, theme=None, role="sister", history=[])
-
-async def cass_chatter_loop(state, config, sisters):
+async def cass_chatter_loop(state: Dict, config: Dict, sisters):
     if state.get("cass_chatter_started"): return
     state["cass_chatter_started"]=True
     while True:
-        if is_online(state, config) and random.random()<0.10:
-            try:
-                msg=await _persona_reply("Drop one disciplined check-in or nudge.", assertive=(random.random()<0.6),
-                                         project_progress=state.get("Cassandra_project_progress", random.random()))
-                if msg: _post(msg, sisters, config, "Cassandra"); log_event(f"[CHATTER] Cassandra: {msg}")
-            except Exception as e: log_event(f"[ERROR] Cassandra chatter: {e}")
-        await asyncio.sleep(random.randint(MIN_SLEEP, MAX_SLEEP))
+        if is_cass_online(state, config):
+            if random.random()<0.12:
+                base, mem = recall_or_enrich_prompt(
+                    "Cassandra", "Offer a brisk check-in or a quick nudge to keep momentum.", ["workout","order","plan"]
+                )
+                msg=await _persona_reply(base)
+                if msg:
+                    for bot in sisters:
+                        if bot.sister_info["name"]=="Cassandra" and bot.is_ready():
+                            ch=bot.get_channel(config["family_group_channel"])
+                            if ch:
+                                await ch.send(msg)
+                                log_event(f"[CHATTER] Cassandra: {msg}")
+                                if mem:
+                                    remember_after_exchange("Cassandra", f"Chatted: {mem['summary']}", tone="firm", tags=["chatter"])
+                                break
+        await asyncio.sleep(random.randint(CASS_MIN_SLEEP, CASS_MAX_SLEEP))
 
-async def cass_handle_message(state, config, sisters, author, content, channel_id):
-    if not is_online(state, config): return
-    profile=load_profile()
-    base=0.22
-    if any(k.lower() in content.lower() for k in profile.get("likes", [])): base+=0.10
-    pool=_pool(profile); hits=_hits(content,pool)
-    if hits: base+=0.08
-    if "cassandra" in content.lower(): base=1.0
-    if random.random()>=min(0.95, base): return
+def _cool_ok(state: Dict, channel_id: int)->bool:
+    cd=state.setdefault("cooldowns",{}).setdefault("Cassandra",{})
+    last=cd.get(channel_id,0); now=datetime.now().timestamp()
+    if now-last<120: return False
+    cd[channel_id]=now; return True
 
-    await asyncio.sleep(random.randint(3,12))
+async def cass_handle_message(state: Dict, config: Dict, sisters, author: str, content: str, channel_id: int)->bool:
+    if not is_cass_online(state,config): return False
+    if not _cool_ok(state,channel_id):   return False
 
-    mhint=""
-    if hits and random.random()<MEDIA_MENTION_BASE:
-        mhint=f" If it fits, nod to {random.choice(hits)} in a clipped aside."
+    rot=state.get("rotation",{"lead":None,"supports":[],"rest":None})
+    chance=0.20
+    if rot.get("lead")=="Cassandra": chance=0.70
+    elif "Cassandra" in rot.get("supports",[]): chance=0.45
+    elif rot.get("rest")=="Cassandra": chance=0.25
+    if "cassandra" in content.lower() or "cass" in content.lower(): chance=1.0
 
-    msg=await _persona_reply(
-        f'{author} said: "{content}". Answer as a strict but protective sister.{mhint}',
-        assertive=(random.random()<0.7),
-        project_progress=state.get("Cassandra_project_progress", random.random()),
-    )
-    if msg: _post(msg, sisters, config, "Cassandra"); log_event(f"[REPLY] Cassandra → {author}: {msg}")
+    inject=None
+    if any(k in content.lower() for k in ["doc","plan","show","film","music","anime","gym","lift","workout"]):
+        m=get_media_reference("Cassandra", mood_tags=["discipline","strategy","documentary","drama"])
+        if m: inject=craft_media_reaction("Cassandra", m)
 
-def ensure_cass_systems(state, config, sisters):
-    assign_schedule(state, config)
+    if random.random()>chance: return False
+
+    addressed=author
+    base=f'Respond to {addressed} with one clear point about "{content}". Keep it crisp and constructive.'
+    if inject: base+=f" If it fits, add: {inject}"
+
+    msg=await _persona_reply(base,address_to=addressed)
+    if not msg: return False
+
+    for bot in sisters:
+        if bot.is_ready() and bot.sister_info["name"]=="Cassandra":
+            ch=bot.get_channel(config["family_group_channel"])
+            if ch:
+                await ch.send(msg)
+                log_event(f"[REPLY] Cassandra → {addressed}: {msg}")
+                remember_after_exchange("Cassandra", f"Replied to {addressed}", tone="firm", tags=["reply"])
+                return True
+    return False
+
+def ensure_cass_systems(state: Dict, config: Dict, sisters):
+    assign_cass_schedule(state, config)
     if not state.get("cass_chatter_started"):
         asyncio.create_task(cass_chatter_loop(state, config, sisters))
