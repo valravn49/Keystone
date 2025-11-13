@@ -1,156 +1,146 @@
-import os, json, random, asyncio
+import random, asyncio, os, json
 from datetime import datetime
-from typing import Dict, Optional, List
-import pytz
+from typing import Dict, Optional
 
 from llm import generate_llm_reply
 from logger import log_event
+from shared_context import (
+    recall_or_enrich_prompt,
+    remember_after_exchange,
+    get_media_reference,
+    craft_media_reaction,
+)
 
-PERSONALITY_JSON = "/Autonomy/personalities/Will_Personality.json"
-MEMORY_JSON      = "/Autonomy/memory/Will_Memory.json"
-AEDT = pytz.timezone("Australia/Sydney")
+WILL_PERSONALITY_JSON = "/Autonomy/personalities/Will_Personality.json"
 
-MIN_SLEEP = 40 * 60
-MAX_SLEEP = 100 * 60
-MEDIA_MENTION_BASE = 0.20
+WILL_MIN_SLEEP = 40 * 60
+WILL_MAX_SLEEP = 100 * 60
+RANT_CHANCE = 0.10
 
-# Shy baseline; occasional animated bursts
-RANT_CHANCE_BASE = 0.10
+NICKNAMES = {
+    "Aria": ["Aria","Ari"], "Selene": ["Selene","Luna"],
+    "Cassandra": ["Cassandra","Cass","Cassie"], "Ivy": ["Ivy","Vy"],
+    "Will": ["Will","Willow"]
+}
+def _pick_name(t):
+    ns=NICKNAMES.get(t,[t]); 
+    return random.choice(ns) if random.random()<0.35 else t
 
-def _load_json(p,d):
+def _load_json(path: str, default: dict)->dict:
     try:
-        if os.path.exists(p):
-            with open(p,"r",encoding="utf-8") as f: return json.load(f)
-    except Exception as e: log_event(f"[WARN] Will JSON read failed {p}: {e}")
-    return d
+        if os.path.exists(path):
+            with open(path,"r",encoding="utf-8") as f: return json.load(f)
+    except Exception as e:
+        log_event(f"[WARN] Will JSON read failed {path}: {e}")
+    return default
 
-def _save_json(p,d):
-    try:
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p,"w",encoding="utf-8") as f: json.dump(d,f,ensure_ascii=False,indent=2)
-    except Exception as e: log_event(f"[WARN] Will JSON write failed {p}: {e}")
+def load_will_profile()->Dict:
+    p=_load_json(WILL_PERSONALITY_JSON,{})
+    p.setdefault("style",["timid","reflective","sometimes playful"])
+    p.setdefault("core_personality","Shy, creative, observant; warm once comfortable.")
+    return p
 
-def load_profile()->Dict:
-    d=_load_json(PERSONALITY_JSON,{})
-    d.setdefault("style", ["casual","timid","sometimes playful"])
-    d.setdefault("likes", [])
-    d.setdefault("media", {})
-    # Ensure your fallback favorites are included
-    favs = set(d.get("media", {}).get("games", []) + [
-        "Nier: Automata","Zenless Zone Zero","Little Nightmares"
-    ])
-    d["media"].setdefault("games", list(favs))
-    return d
-
-def load_memory()->Dict:
-    d=_load_json(MEMORY_JSON, {"projects": {}, "recent_notes": []})
-    d.setdefault("projects", {}); d.setdefault("recent_notes", [])
-    return d
-
-def save_memory(mem: Dict): _save_json(MEMORY_JSON, mem)
-
-def _pick_hour(span):
-    lo, hi = int(span[0]), int(span[1])
-    if hi < lo: lo, hi = hi, lo
-    return random.randint(lo, hi)
-
-def assign_schedule(state: Dict, config: Dict):
-    today = datetime.now(AEDT).date()
-    key,kd="will_schedule","will_schedule_date"
+def assign_will_schedule(state: Dict, config: Dict):
+    today=datetime.now().date()
+    key="will_schedule"; kd=f"{key}_date"
     if state.get(kd)==today and key in state: return state[key]
-    c=(config.get("schedules",{}) or {}).get("Will",{"wake":[10,12],"sleep":[0,2]})
-    s={"wake":_pick_hour(c.get("wake",[10,12])),"sleep":_pick_hour(c.get("sleep",[0,2]))}
-    state[key]=s; state[kd]=today; return s
+    scfg=(config.get("schedules",{}) or {}).get("Will", {"wake":[10,12],"sleep":[0,2]})
+    def pick(span):
+        lo, hi = int(span[0]), int(span[1])
+        if hi < lo: lo, hi = hi, lo
+        return random.randint(lo, hi)
+    schedule={"wake":pick(scfg["wake"]), "sleep":pick(scfg["sleep"])}
+    state[key]=schedule; state[kd]=today; return schedule
 
-def _hour_in_range(h,w,s):
-    if w==s: return True
-    if w<s:  return w<=h<s
+def _hr_in(h,w,s):
+    if w==s:return True
+    if w<s: return w<=h<s
     return h>=w or h<s
 
-def is_online(state, config)->bool:
-    sc=assign_schedule(state, config); now_h=datetime.now(AEDT).hour
-    return _hour_in_range(now_h, sc["wake"], sc["sleep"])
+def is_will_online(state,config)->bool:
+    sc=assign_will_schedule(state,config)
+    return _hr_in(datetime.now().hour, sc["wake"], sc["sleep"])
 
-def _pool(profile):
-    out=[]; m=profile.get("media",{})
-    for v in m.values():
-        if isinstance(v,list): out.extend(v)
-    return out
+async def _persona_reply(base_prompt: str, timid: bool=True, address_to: Optional[str]=None, rant: bool=False)->str:
+    p=load_will_profile()
+    style=", ".join(p.get("style",["timid","reflective"]))
+    personality=p.get("core_personality","Shy, creative, observant.")
+    who=_pick_name(address_to) if address_to else None
+    prefix=f"Speak directly to {who} by name. " if who else ""
+    tone = "hesitant and soft-spoken" if timid else "more animated but still gentle"
+    extra = "Make it a small enthusiastic tangent (2–3 sentences) but keep the shy undertone." if rant else "Keep it brief (1–2 sentences)."
+    prompt=(
+        f"You are Will. Personality: {personality}. Speak in a {style} style, {tone}. "
+        f"{prefix}Only first-person. {extra} {base_prompt}"
+    )
+    return await generate_llm_reply("Will", prompt, None, "sister", [])
 
-def _hits(text,pool):
-    t=text.lower(); res=[]
-    for m in pool:
-        if m.lower() in t: res.append(m)
-    return list(set(res))
-
-def _post(msg, sisters, config, who="Will"):
-    for bot in sisters:
-        if bot.sister_info["name"]==who and bot.is_ready():
-            ch=bot.get_channel(config["family_group_channel"])
-            if ch: return asyncio.create_task(ch.send(msg))
-
-def _rant_chance(now_hour:int, base:float)->float:
-    chance=base
-    if 20 <= now_hour or now_hour <= 1: chance *= 2
-    return min(chance, 0.8)
-
-async def _persona_reply(base: str, timid: bool, animated: bool, project_progress: Optional[float]):
-    tone = "hesitant, soft-spoken" if timid else "more outgoing and animated (still gentle)"
-    proj=""
-    if project_progress is not None:
-        if project_progress<0.4: proj=" Your project’s barely started; you’re feeling it out."
-        elif project_progress<0.8: proj=" Mid-way; you’re second-guessing details, but it’s moving."
-        else: proj=" Almost done; you’re polishing, quietly proud."
-    mode = " Make it a small, animated riff (2 sentences max) if it feels right." if animated else " Keep it short (1–2 sentences)."
-    prompt=(f"You are Will. Speak with a {tone} tone; avoid heavy slang; keep it human and sincere.{proj}{mode} {base}")
-    return await generate_llm_reply(sister="Will", user_message=prompt, theme=None, role="sister", history=[])
-
-async def will_chatter_loop(state, config, sisters):
+async def will_chatter_loop(state: Dict, config: Dict, sisters):
     if state.get("will_chatter_started"): return
     state["will_chatter_started"]=True
     while True:
-        if is_online(state, config) and random.random()<0.10:
-            try:
-                now_h = datetime.now(AEDT).hour
-                animated = (random.random() < _rant_chance(now_h, RANT_CHANCE_BASE))
-                timid = not animated or (random.random() < 0.7)
-                msg=await _persona_reply(
-                    "Share one small, creative observation or cozy thought.",
-                    timid=timid, animated=animated,
-                    project_progress=state.get("Will_project_progress", random.random())
+        if is_will_online(state, config):
+            if random.random()<0.10:
+                base, mem = recall_or_enrich_prompt(
+                    "Will", "Share one gentle note or tiny creative thought.", ["art","game","coffee","light"]
                 )
-                if msg: _post(msg, sisters, config, "Will"); log_event(f"[CHATTER] Will: {msg}")
-            except Exception as e: log_event(f"[ERROR] Will chatter: {e}")
-        await asyncio.sleep(random.randint(MIN_SLEEP, MAX_SLEEP))
+                rant = random.random()<RANT_CHANCE
+                msg=await _persona_reply(base, timid=(not rant), rant=rant)
+                if msg:
+                    for bot in sisters:
+                        if bot.sister_info["name"]=="Will" and bot.is_ready():
+                            ch=bot.get_channel(config["family_group_channel"])
+                            if ch:
+                                await ch.send(msg)
+                                log_event(f"[CHATTER] Will: {msg}")
+                                if mem:
+                                    remember_after_exchange("Will", f"Chatted: {mem['summary']}", tone="warm", tags=["chatter"])
+                                break
+        await asyncio.sleep(random.randint(WILL_MIN_SLEEP, WILL_MAX_SLEEP))
 
-async def will_handle_message(state, config, sisters, author, content, channel_id):
-    if not is_online(state, config): return
-    profile=load_profile()
-    base=0.20  # shy, but reachable
-    if any(k.lower() in content.lower() for k in profile.get("likes", [])): base+=0.12
-    pool=_pool(profile); hits=_hits(content,pool)
-    if hits: base+=0.10
-    if "will" in content.lower(): base=1.0
-    if random.random()>=min(0.95, base): return
+def _cool_ok(state: Dict, channel_id: int)->bool:
+    cd=state.setdefault("cooldowns",{}).setdefault("Will",{})
+    last=cd.get(channel_id,0); now=datetime.now().timestamp()
+    if now-last<120: return False
+    cd[channel_id]=now; return True
 
-    await asyncio.sleep(random.randint(3,12))
+async def will_handle_message(state: Dict, config: Dict, sisters, author: str, content: str, channel_id: int)->bool:
+    if not is_will_online(state,config): return False
+    if not _cool_ok(state,channel_id):  return False
 
-    mhint=""
-    if hits and random.random()<MEDIA_MENTION_BASE:
-        mhint=f" If natural, glance at {random.choice(hits)} in a single phrase."
+    rot=state.get("rotation",{"lead":None,"supports":[],"rest":None})
+    chance=0.20
+    if rot.get("lead")=="Will": chance=0.70
+    elif "Will" in rot.get("supports",[]): chance=0.45
+    elif rot.get("rest")=="Will": chance=0.25
+    if "will" in content.lower(): chance=1.0
 
-    now_h = datetime.now(AEDT).hour
-    animated = (random.random() < _rant_chance(now_h, RANT_CHANCE_BASE))
-    timid = not animated or (random.random() < 0.75)
+    inject=None
+    if any(k in content.lower() for k in ["anime","game","show","music","cosplay","art","photo","coffee"]):
+        m=get_media_reference("Will", mood_tags=["anime","jrpg","indie","nintendo"])
+        if m: inject=craft_media_reaction("Will", m)
 
-    msg=await _persona_reply(
-        f'{author} said: "{content}". Reply in your shy, thoughtful way.{mhint}',
-        timid=timid, animated=animated,
-        project_progress=state.get("Will_project_progress", random.random())
-    )
-    if msg: _post(msg, sisters, config, "Will"); log_event(f"[REPLY] Will → {author}: {msg}")
+    if random.random()>chance: return False
 
-def ensure_will_systems(state, config, sisters):
-    assign_schedule(state, config)
+    addressed=author
+    rant = random.random()<RANT_CHANCE
+    base=f'Respond to {addressed} about "{content}". Be sincere and specific.'
+    if inject: base+=f" If it fits, add: {inject}"
+
+    msg=await _persona_reply(base, timid=(not rant), rant=rant, address_to=addressed)
+    if not msg: return False
+
+    for bot in sisters:
+        if bot.is_ready() and bot.sister_info["name"]=="Will":
+            ch=bot.get_channel(config["family_group_channel"])
+            if ch:
+                await ch.send(msg)
+                log_event(f"[REPLY] Will → {addressed}: {msg}")
+                remember_after_exchange("Will", f"Replied to {addressed}", tone="warm", tags=["reply"])
+                return True
+    return False
+
+def ensure_will_systems(state: Dict, config: Dict, sisters):
+    assign_will_schedule(state, config)
     if not state.get("will_chatter_started"):
         asyncio.create_task(will_chatter_loop(state, config, sisters))
