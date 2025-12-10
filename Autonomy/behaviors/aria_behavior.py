@@ -10,6 +10,7 @@ from shared_context import (
     get_media_reference,
     craft_media_reaction,
 )
+from messaging_utils import send_human_like_message  # 🔸 new
 
 # Files (optional; safe if missing)
 ARIA_PERSONALITY_JSON = "/Autonomy/personalities/Aria_Personality.json"
@@ -70,7 +71,7 @@ def assign_aria_schedule(state: Dict, config: Dict):
     if state.get(kd) == today and key in state:
         return state[key]
     scfg = (config.get("schedules", {}) or {}).get("Aria", {"wake":[6,8],"sleep":[22,23]})
-    def pick(span): 
+    def pick(span):
         lo, hi = int(span[0]), int(span[1])
         if hi < lo: lo, hi = hi, lo
         return random.randint(lo, hi)
@@ -93,49 +94,107 @@ async def _persona_reply(
     reflective: bool = False,
     address_to: Optional[str] = None,
 ) -> str:
+    """
+    Wraps the core prompt for Aria with style, personality, and small
+    variability in reply length / tone for more lifelike behavior.
+    """
     profile = load_aria_profile()
     style = ", ".join(profile.get("style", ["structured", "gentle"]))
     personality = profile.get("core_personality", "Calm, methodical, detail-oriented but warm.")
-    tone = "quietly thoughtful and precise" if reflective else "soft, concise, and lightly teasing"
+
+    # Decide how talkative she is this time
+    length_mode = random.choices(
+        ["short", "medium", "ramble"],
+        weights=[0.5, 0.35, 0.15],
+    )[0]
+
+    if length_mode == "short":
+        length_hint = "Keep this very short and natural, around 1–2 sentences."
+    elif length_mode == "medium":
+        length_hint = "Reply in about 2–4 sentences, with enough detail to feel helpful but not like an essay."
+    else:
+        length_hint = "It’s okay to be a bit more talkative here, up to 5–7 sentences, but still conversational."
+
+    tone = (
+        "quietly thoughtful and precise"
+        if reflective
+        else "soft, concise, and lightly teasing when it feels appropriate"
+    )
+
     who = _pick_name(address_to) if address_to else None
 
-    # First-person only, no third-person self, natural sibling address
     prefix = ""
     if who:
-        prefix = f"Speak directly to {who} by name. "
+        prefix = f"Speak directly to {who} by name at least once in the reply. "
 
     prompt = (
-        f"You are Aria. Personality: {personality}. Speak in a {style} style, {tone}. "
-        f"{prefix}Only first-person (never refer to yourself in third person). "
-        f"Keep replies compact and real-world grounded. {base_prompt}"
+        f"You are Aria. Personality: {personality}. "
+        f"Your style is {style}, and your tone is {tone}. "
+        f"{prefix}"
+        "Always speak in the first person, never referring to yourself in the third person. "
+        "Write like a real person on Discord: natural phrasing, light use of emojis only when it feels right, "
+        "and varied sentence length. Avoid sounding like a formal essay or a system message. "
+        f"{length_hint} "
+        f"Now respond based on this instruction/context: {base_prompt}"
     )
+
     return await generate_llm_reply(
-        sister="Aria", user_message=prompt, theme=None, role="sister", history=[]
+        sister="Aria",
+        user_message=prompt,
+        theme=None,
+        role="sister",
+        history=[],
     )
 
 # ---------- Background chatter ----------
 async def aria_chatter_loop(state: Dict, config: Dict, sisters):
-    if state.get("aria_chatter_started"): return
+    if state.get("aria_chatter_started"):
+        return
     state["aria_chatter_started"] = True
+
     while True:
         if is_aria_online(state, config):
             if random.random() < 0.08:
                 reflective = random.random() < THOUGHTFUL_RESPONSE_CHANCE
+
+                # Use shared context to seed chatter with something relevant
                 base, mem = recall_or_enrich_prompt(
-                    "Aria", "Share one small practical observation for the group chat.", ["work", "kitchen", "organization"]
+                    "Aria",
+                    "Share one small practical observation or gentle reminder for the group chat, "
+                    "about day-to-day life, routines, or organization.",
+                    ["work", "kitchen", "organization", "routine", "planning"],
                 )
-                msg = await _persona_reply(base, reflective=reflective)
+
+                base_prompt = (
+                    "Say one small, grounded thing to the family group chat. "
+                    "It should feel like you briefly chiming in, not giving a lecture. "
+                )
+                if base:
+                    base_prompt += (
+                        f"Use this context if it helps you sound more consistent and connected: {base} "
+                    )
+
+                msg = await _persona_reply(base_prompt, reflective=reflective)
+
                 if msg:
-                    # Dispatch through Aria’s bot
+                    # Dispatch through Aria's bot
                     for bot in sisters:
                         if bot.sister_info["name"] == "Aria" and bot.is_ready():
                             ch = bot.get_channel(config["family_group_channel"])
                             if ch:
-                                await ch.send(msg)
+                                await send_human_like_message(
+                                    ch, msg, speaker_name="Aria"
+                                )
                                 log_event(f"[CHATTER] Aria: {msg}")
                                 if mem:
-                                    remember_after_exchange("Aria", f"Chatted: {mem['summary']}", tone="calm", tags=["chatter"])
+                                    remember_after_exchange(
+                                        "Aria",
+                                        f"Chatted: {mem.get('summary', 'small practical note')}",
+                                        tone="calm",
+                                        tags=["chatter"],
+                                    )
                                 break
+
         await asyncio.sleep(random.randint(ARIA_MIN_SLEEP, ARIA_MAX_SLEEP))
 
 # ---------- Reactive handler ----------
@@ -143,50 +202,96 @@ def _cool_ok(state: Dict, channel_id: int) -> bool:
     cd = state.setdefault("cooldowns", {}).setdefault("Aria", {})
     last = cd.get(channel_id, 0)
     now = datetime.now().timestamp()
+    # Cooldown per channel so she doesn't spam
     if now - last < 120:  # 2 min per channel
         return False
     cd[channel_id] = now
     return True
 
-async def aria_handle_message(state: Dict, config: Dict, sisters, author: str, content: str, channel_id: int) -> bool:
-    if not is_aria_online(state, config): return False
-    if not _cool_ok(state, channel_id):  return False
+
+async def aria_handle_message(
+    state: Dict,
+    config: Dict,
+    sisters,
+    author: str,
+    content: str,
+    channel_id: int,
+) -> bool:
+    if not is_aria_online(state, config):
+        return False
+    if not _cool_ok(state, channel_id):
+        return False
 
     # Role weighting (lead/support/rest)
     rot = state.get("rotation", {"lead": None, "supports": [], "rest": None})
     chance = 0.20
-    if rot.get("lead") == "Aria": chance = 0.70
-    elif "Aria" in rot.get("supports", []): chance = 0.45
-    elif rot.get("rest") == "Aria": chance = 0.25
+    if rot.get("lead") == "Aria":
+        chance = 0.70
+    elif "Aria" in rot.get("supports", []):
+        chance = 0.45
+    elif rot.get("rest") == "Aria":
+        chance = 0.25
 
     # Mention = always reply
-    if "aria" in content.lower(): chance = 1.0
+    if "aria" in content.lower():
+        chance = 1.0
 
     # Media hook
     inject = None
-    if any(k in content.lower() for k in ["anime","game","show","movie","book","music"]):
-        m = get_media_reference("Aria", mood_tags=["cozy","slice of life","study"])
+    lowered = content.lower()
+    if any(k in lowered for k in ["anime", "game", "show", "movie", "book", "music"]):
+        m = get_media_reference("Aria", mood_tags=["cozy", "slice of life", "study"])
         if m:
             inject = craft_media_reaction("Aria", m)
 
-    if random.random() > chance: return False
+    if random.random() > chance:
+        return False
 
     reflective = random.random() < 0.5
     addressed = author
-    base = f'Respond to what {addressed} said: "{content}". Keep it brief, specific, and kind.'
+
+    # Pull in a bit of recent context so replies feel like they remember things
+    base_ctx, mem = recall_or_enrich_prompt(
+        "Aria",
+        content,
+        ["family_chat", "recent", "mood"],
+    )
+
+    base = (
+        f'Respond to what {addressed} said in the family group chat: "{content}". '
+        "Be specific to what they said, kind, and grounded. "
+        "Answer like you’ve been following the conversation, not like a detached narrator. "
+    )
+    if base_ctx:
+        base += (
+            f"If it feels natural, weave in or be informed by this context: {base_ctx}. "
+        )
     if inject:
-        base += f" If it fits naturally, add: {inject}"
+        base += f"If it fits naturally, you can also include: {inject}. "
 
     msg = await _persona_reply(base, reflective=reflective, address_to=addressed)
-    if not msg: return False
+    if not msg:
+        return False
 
     for bot in sisters:
         if bot.is_ready() and bot.sister_info["name"] == "Aria":
             ch = bot.get_channel(config["family_group_channel"])
             if ch:
-                await ch.send(msg)
+                await send_human_like_message(ch, msg, speaker_name="Aria")
                 log_event(f"[REPLY] Aria → {addressed}: {msg}")
-                remember_after_exchange("Aria", f"Replied to {addressed}", tone="warm", tags=["reply"])
+                remember_after_exchange(
+                    "Aria",
+                    f"Replied to {addressed}",
+                    tone="warm",
+                    tags=["reply"],
+                )
+                if mem:
+                    remember_after_exchange(
+                        "Aria",
+                        mem.get("summary", "Context used while replying"),
+                        tone="neutral",
+                        tags=["context", "reply"],
+                    )
                 return True
     return False
 
