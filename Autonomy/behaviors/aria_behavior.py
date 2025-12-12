@@ -10,7 +10,7 @@ from shared_context import (
     get_media_reference,
     craft_media_reaction,
 )
-from messaging_utils import send_human_like_message  # 🔸 new
+from messaging_utils import send_human_like_message
 
 # Files (optional; safe if missing)
 ARIA_PERSONALITY_JSON = "/Autonomy/personalities/Aria_Personality.json"
@@ -67,21 +67,31 @@ def save_aria_memory(mem: Dict):
 # ---------- Schedule ----------
 def assign_aria_schedule(state: Dict, config: Dict):
     today = datetime.now().date()
-    key = "aria_schedule"; kd = f"{key}_date"
+    key = "aria_schedule"
+    kd  = f"{key}_date"
     if state.get(kd) == today and key in state:
         return state[key]
-    scfg = (config.get("schedules", {}) or {}).get("Aria", {"wake":[6,8],"sleep":[22,23]})
+    scfg = (config.get("schedules", {}) or {}).get(
+        "Aria",
+        {"wake": [6, 8], "sleep": [22, 23]},
+    )
+
     def pick(span):
         lo, hi = int(span[0]), int(span[1])
-        if hi < lo: lo, hi = hi, lo
+        if hi < lo:
+            lo, hi = hi, lo
         return random.randint(lo, hi)
+
     schedule = {"wake": pick(scfg["wake"]), "sleep": pick(scfg["sleep"])}
-    state[key] = schedule; state[kd] = today
+    state[key] = schedule
+    state[kd]  = today
     return schedule
 
 def _hour_in_range(h, wake, sleep):
-    if wake == sleep: return True
-    if wake < sleep:  return wake <= h < sleep
+    if wake == sleep:
+        return True
+    if wake < sleep:
+        return wake <= h < sleep
     return h >= wake or h < sleep
 
 def is_aria_online(state: Dict, config: Dict) -> bool:
@@ -122,10 +132,7 @@ async def _persona_reply(
     )
 
     who = _pick_name(address_to) if address_to else None
-
-    prefix = ""
-    if who:
-        prefix = f"Speak directly to {who} by name at least once in the reply. "
+    prefix = f"Speak directly to {who} by name at least once in the reply. " if who else ""
 
     prompt = (
         f"You are Aria. Personality: {personality}. "
@@ -157,8 +164,7 @@ async def aria_chatter_loop(state: Dict, config: Dict, sisters):
             if random.random() < 0.08:
                 reflective = random.random() < THOUGHTFUL_RESPONSE_CHANCE
 
-                # Use shared context to seed chatter with something relevant
-                base, mem = recall_or_enrich_prompt(
+                base_ctx, mem = recall_or_enrich_prompt(
                     "Aria",
                     "Share one small practical observation or gentle reminder for the group chat, "
                     "about day-to-day life, routines, or organization.",
@@ -169,15 +175,14 @@ async def aria_chatter_loop(state: Dict, config: Dict, sisters):
                     "Say one small, grounded thing to the family group chat. "
                     "It should feel like you briefly chiming in, not giving a lecture. "
                 )
-                if base:
+                if base_ctx:
                     base_prompt += (
-                        f"Use this context if it helps you sound more consistent and connected: {base} "
+                        f"Use this context if it helps you sound more consistent and connected: {base_ctx} "
                     )
 
                 msg = await _persona_reply(base_prompt, reflective=reflective)
 
                 if msg:
-                    # Dispatch through Aria's bot
                     for bot in sisters:
                         if bot.sister_info["name"] == "Aria" and bot.is_ready():
                             ch = bot.get_channel(config["family_group_channel"])
@@ -197,44 +202,40 @@ async def aria_chatter_loop(state: Dict, config: Dict, sisters):
 
         await asyncio.sleep(random.randint(ARIA_MIN_SLEEP, ARIA_MAX_SLEEP))
 
-# ---------- Reactive handler ----------
+# ---------- Cooldown ----------
 def _cool_ok(state: Dict, channel_id: int) -> bool:
     cd = state.setdefault("cooldowns", {}).setdefault("Aria", {})
     last = cd.get(channel_id, 0)
     now = datetime.now().timestamp()
-    # Cooldown per channel so she doesn't spam
-    if now - last < 120:  # 2 min per channel
+    if now - last < 120:
         return False
     cd[channel_id] = now
     return True
 
-
+# ---------- Reactive handler ----------
 async def aria_handle_message(
     state: Dict,
     config: Dict,
     sisters,
-    author: str,
+    author_label: str,
     content: str,
     channel_id: int,
+    discord_author_name: str,
+    discord_author_is_bot: bool,
 ) -> bool:
     if not is_aria_online(state, config):
         return False
     if not _cool_ok(state, channel_id):
         return False
 
-    # Role weighting (lead/support/rest)
-    rot = state.get("rotation", {"lead": None, "supports": [], "rest": None})
-    chance = 0.20
-    if rot.get("lead") == "Aria":
-        chance = 0.70
-    elif "Aria" in rot.get("supports", []):
-        chance = 0.45
-    elif rot.get("rest") == "Aria":
-        chance = 0.25
+    reflective = random.random() < 0.5
+    addressed = author_label or discord_author_name
 
-    # Mention = always reply
-    if "aria" in content.lower():
-        chance = 1.0
+    base_ctx, mem = recall_or_enrich_prompt(
+        "Aria",
+        content,
+        ["family_chat", "recent", "mood"],
+    )
 
     # Media hook
     inject = None
@@ -244,28 +245,13 @@ async def aria_handle_message(
         if m:
             inject = craft_media_reaction("Aria", m)
 
-    if random.random() > chance:
-        return False
-
-    reflective = random.random() < 0.5
-    addressed = author
-
-    # Pull in a bit of recent context so replies feel like they remember things
-    base_ctx, mem = recall_or_enrich_prompt(
-        "Aria",
-        content,
-        ["family_chat", "recent", "mood"],
-    )
-
     base = (
         f'Respond to what {addressed} said in the family group chat: "{content}". '
         "Be specific to what they said, kind, and grounded. "
         "Answer like you’ve been following the conversation, not like a detached narrator. "
     )
     if base_ctx:
-        base += (
-            f"If it feels natural, weave in or be informed by this context: {base_ctx}. "
-        )
+        base += f"If it feels natural, weave in or be informed by this context: {base_ctx}. "
     if inject:
         base += f"If it fits naturally, you can also include: {inject}. "
 
