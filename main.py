@@ -17,7 +17,7 @@ from nutrition import summarize_daily_nutrition
 from image_utils import generate_and_post_outfits
 
 # 🔸 Routing utilities
-from Autonomy.routing_utils import (
+from routing_utils import (
     build_sister_id_map,
     identify_sender,
     should_process_message_once,
