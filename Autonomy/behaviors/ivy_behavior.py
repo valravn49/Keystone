@@ -10,7 +10,7 @@ from shared_context import (
     get_media_reference,
     craft_media_reaction,
 )
-from messaging_utils import send_human_like_message  # 🔸 new
+from messaging_utils import send_human_like_message
 
 IVY_PERSONALITY_JSON = "/Autonomy/personalities/Ivy_Personality.json"
 
@@ -64,7 +64,6 @@ def assign_ivy_schedule(state: Dict, config: Dict):
 
     def pick(span):
         lo, hi = int(span[0]), int(span[1])
-        # allow wrap by swapping if needed (matches your existing logic)
         if hi < lo:
             lo, hi = hi, lo
         return random.randint(lo, hi)
@@ -101,10 +100,9 @@ async def _persona_reply(
         "Playful chaos with skill; quick humor.",
     )
 
-    # How much Ivy talks this time
     length_mode = random.choices(
         ["short", "medium", "ramble"],
-        weights=[0.6, 0.3, 0.1],  # she’s a quip machine with occasional mini-rants
+        weights=[0.6, 0.3, 0.1],
     )[0]
 
     if length_mode == "short":
@@ -120,9 +118,7 @@ async def _persona_reply(
         )
 
     who = _pick_name(address_to) if address_to else None
-    prefix = ""
-    if who:
-        prefix = f"Speak directly to {who} by name at least once. "
+    prefix = f"Speak directly to {who} by name at least once. " if who else ""
 
     prompt = (
         f"You are Ivy. Personality: {personality} "
@@ -152,7 +148,6 @@ async def ivy_chatter_loop(state: Dict, config: Dict, sisters):
     while True:
         if is_ivy_online(state, config):
             if random.random() < 0.14:
-                # Use context so she can tease about ongoing things
                 base_ctx, mem = recall_or_enrich_prompt(
                     "Ivy",
                     "Drop one quick playful comment or tease someone lightly.",
@@ -208,30 +203,27 @@ async def ivy_handle_message(
     state: Dict,
     config: Dict,
     sisters,
-    author: str,
+    author_label: str,
     content: str,
     channel_id: int,
+    discord_author_name: str,
+    discord_author_is_bot: bool,
 ) -> bool:
     if not is_ivy_online(state, config):
         return False
     if not _cool_ok(state, channel_id):
         return False
 
-    rot = state.get("rotation", {"lead": None, "supports": [], "rest": None})
-    chance = 0.20
-    if rot.get("lead") == "Ivy":
-        chance = 0.70
-    elif "Ivy" in rot.get("supports", []):
-        chance = 0.45
-    elif rot.get("rest") == "Ivy":
-        chance = 0.25
+    addressed = author_label or discord_author_name
 
-    lower = content.lower()
-    # Name/alias mention = always reply
-    if "ivy" in lower or "vy" in lower:
-        chance = 1.0
+    base_ctx, mem = recall_or_enrich_prompt(
+        "Ivy",
+        content,
+        ["family_chat", "running_jokes", "fashion", "gaming"],
+    )
 
     inject = None
+    lower = content.lower()
     if any(k in lower for k in ["outfit", "style", "engine", "scooter", "game", "anime", "music"]):
         m = get_media_reference(
             "Ivy",
@@ -239,18 +231,6 @@ async def ivy_handle_message(
         )
         if m:
             inject = craft_media_reaction("Ivy", m)
-
-    if random.random() > chance:
-        return False
-
-    addressed = author
-
-    # Use context so her tease can hook into something ongoing
-    base_ctx, mem = recall_or_enrich_prompt(
-        "Ivy",
-        content,
-        ["family_chat", "running_jokes", "fashion", "gaming"],
-    )
 
     base = (
         f'Respond to what {addressed} said in the family group chat: "{content}". '
