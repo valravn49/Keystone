@@ -10,7 +10,7 @@ from shared_context import (
     get_media_reference,
     craft_media_reaction,
 )
-from messaging_utils import send_human_like_message  # 🔸 new import
+from messaging_utils import send_human_like_message
 
 SELENE_PERSONALITY_JSON = "/Autonomy/personalities/Selene_Personality.json"
 SELENE_MEMORY_JSON      = "/Autonomy/memory/Selene_Memory.json"
@@ -98,7 +98,6 @@ async def _persona_reply(
         "Nurturing and serene, with a streak for motion and weather.",
     )
 
-    # Decide how talkative Selene is this time
     length_mode = random.choices(
         ["short", "medium", "ramble"],
         weights=[0.5, 0.35, 0.15],
@@ -117,9 +116,7 @@ async def _persona_reply(
         )
 
     who = _pick_name(address_to) if address_to else None
-    prefix = ""
-    if who:
-        prefix = f"Speak directly to {who} by name at least once in the reply. "
+    prefix = f"Speak directly to {who} by name at least once in the reply. " if who else ""
 
     prompt = (
         f"You are Selene. Personality: {personality} "
@@ -149,7 +146,6 @@ async def selene_chatter_loop(state: Dict, config: Dict, sisters):
     while True:
         if is_selene_online(state, config):
             if random.random() < 0.10:
-                # Pull some recent context so her check-ins feel connected
                 base_ctx, mem = recall_or_enrich_prompt(
                     "Selene",
                     "Offer one cozy check-in or a small sensory observation about the day.",
@@ -205,47 +201,31 @@ async def selene_handle_message(
     state: Dict,
     config: Dict,
     sisters,
-    author: str,
+    author_label: str,
     content: str,
     channel_id: int,
+    discord_author_name: str,
+    discord_author_is_bot: bool,
 ) -> bool:
     if not is_selene_online(state, config):
         return False
     if not _cool_ok(state, channel_id):
         return False
 
-    rot = state.get("rotation", {"lead": None, "supports": [], "rest": None})
-    chance = 0.20
-    if rot.get("lead") == "Selene":
-        chance = 0.70
-    elif "Selene" in rot.get("supports", []):
-        chance = 0.45
-    elif rot.get("rest") == "Selene":
-        chance = 0.25
+    addressed = author_label or discord_author_name
 
-    # Mention = always reply
-    if "selene" in content.lower():
-        chance = 1.0
+    base_ctx, mem = recall_or_enrich_prompt(
+        "Selene",
+        content,
+        ["family_chat", "recent", "emotions", "comfort"],
+    )
 
-    # Media hook
     inject = None
     lowered = content.lower()
     if any(k in lowered for k in ["show", "anime", "movie", "soundtrack", "music"]):
         m = get_media_reference("Selene", mood_tags=["cozy", "feel-good", "rain", "tea"])
         if m:
             inject = craft_media_reaction("Selene", m)
-
-    if random.random() > chance:
-        return False
-
-    addressed = author
-
-    # Pull some context so she "remembers" the vibe
-    base_ctx, mem = recall_or_enrich_prompt(
-        "Selene",
-        content,
-        ["family_chat", "recent", "emotions", "comfort"],
-    )
 
     base = (
         f'Respond to what {addressed} said in the family group chat: "{content}". '
