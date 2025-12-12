@@ -10,7 +10,7 @@ from shared_context import (
     get_media_reference,
     craft_media_reaction,
 )
-from messaging_utils import send_human_like_message  # 🔸 new
+from messaging_utils import send_human_like_message
 
 CASS_PERSONALITY_JSON = "/Autonomy/personalities/Cassandra_Personality.json"
 
@@ -100,7 +100,6 @@ async def _persona_reply(
         "Disciplined and composed; blunt but fair."
     )
 
-    # How much Cassandra says this time
     length_mode = random.choices(
         ["short", "medium", "ramble"],
         weights=[0.55, 0.35, 0.10],  # she favors short
@@ -119,9 +118,7 @@ async def _persona_reply(
         )
 
     who = _pick_name(address_to) if address_to else None
-    prefix = ""
-    if who:
-        prefix = f"Speak directly to {who} by name at least once. "
+    prefix = f"Speak directly to {who} by name at least once. " if who else ""
 
     prompt = (
         f"You are Cassandra. Personality: {personality} "
@@ -151,7 +148,6 @@ async def cass_chatter_loop(state: Dict, config: Dict, sisters):
     while True:
         if is_cass_online(state, config):
             if random.random() < 0.12:
-                # Use context so her nudges tie into ongoing habits
                 base_ctx, mem = recall_or_enrich_prompt(
                     "Cassandra",
                     "Offer a brisk check-in or a quick nudge to keep momentum.",
@@ -206,30 +202,27 @@ async def cass_handle_message(
     state: Dict,
     config: Dict,
     sisters,
-    author: str,
+    author_label: str,
     content: str,
     channel_id: int,
+    discord_author_name: str,
+    discord_author_is_bot: bool,
 ) -> bool:
     if not is_cass_online(state, config):
         return False
     if not _cool_ok(state, channel_id):
         return False
 
-    rot = state.get("rotation", {"lead": None, "supports": [], "rest": None})
-    chance = 0.20
-    if rot.get("lead") == "Cassandra":
-        chance = 0.70
-    elif "Cassandra" in rot.get("supports", []):
-        chance = 0.45
-    elif rot.get("rest") == "Cassandra":
-        chance = 0.25
+    addressed = author_label or discord_author_name
 
-    lower = content.lower()
-    # Name/alias mention = always reply
-    if "cassandra" in lower or "cass" in lower:
-        chance = 1.0
+    base_ctx, mem = recall_or_enrich_prompt(
+        "Cassandra",
+        content,
+        ["family_chat", "plans", "habits", "progress"],
+    )
 
     inject = None
+    lower = content.lower()
     if any(k in lower for k in ["doc", "plan", "show", "film", "music", "anime", "gym", "lift", "workout"]):
         m = get_media_reference(
             "Cassandra",
@@ -237,18 +230,6 @@ async def cass_handle_message(
         )
         if m:
             inject = craft_media_reaction("Cassandra", m)
-
-    if random.random() > chance:
-        return False
-
-    addressed = author
-
-    # Pull some context so she can reference ongoing structure/progress
-    base_ctx, mem = recall_or_enrich_prompt(
-        "Cassandra",
-        content,
-        ["family_chat", "plans", "habits", "progress"],
-    )
 
     base = (
         f'Respond to what {addressed} said in the family group chat: "{content}". '
