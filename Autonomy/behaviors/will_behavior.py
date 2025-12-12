@@ -10,14 +10,13 @@ from shared_context import (
     get_media_reference,
     craft_media_reaction,
 )
-from messaging_utils import send_human_like_message  # 🔹 new
+from messaging_utils import send_human_like_message
 
 WILL_PERSONALITY_JSON = "/Autonomy/personalities/Will_Personality.json"
 
 WILL_MIN_SLEEP = 40 * 60
 WILL_MAX_SLEEP = 100 * 60
 
-# how often he unexpectedly "rants" in a soft, excited way
 RANT_CHANCE = 0.10
 
 NICKNAMES = {
@@ -96,7 +95,7 @@ async def _persona_reply(
 ) -> str:
     """
     Builds Will's voice: shy, warm, a little hesitant, sometimes trailing
-    into a tiny excited tangent. Much softer and more human now.
+    into a tiny excited tangent.
     """
     p = load_will_profile()
     style = ", ".join(p.get("style", ["timid", "reflective"]))
@@ -105,7 +104,6 @@ async def _persona_reply(
     who = _pick_name(address_to) if address_to else None
     prefix = f"Speak directly to {who} by name once. " if who else ""
 
-    # Decide how long Will talks
     if rant:
         length_hint = (
             "Let yourself get softly excited for a moment — 3–5 sentences — "
@@ -213,41 +211,18 @@ async def will_handle_message(
     state: Dict,
     config: Dict,
     sisters,
-    author: str,
+    author_label: str,
     content: str,
     channel_id: int,
+    discord_author_name: str,
+    discord_author_is_bot: bool,
 ) -> bool:
     if not is_will_online(state, config):
         return False
     if not _cool_ok(state, channel_id):
         return False
 
-    rot = state.get("rotation", {"lead": None, "supports": [], "rest": None})
-    chance = 0.20
-    if rot.get("lead") == "Will":
-        chance = 0.70
-    elif "Will" in rot.get("supports", []):
-        chance = 0.45
-    elif rot.get("rest") == "Will":
-        chance = 0.25
-
-    lower = content.lower()
-    if "will" in lower or "willow" in lower:
-        chance = 1.0
-
-    inject = None
-    if any(k in lower for k in ["anime", "game", "show", "music", "cosplay", "art", "photo", "coffee"]):
-        m = get_media_reference(
-            "Will",
-            mood_tags=["anime", "jrpg", "indie", "nintendo"],
-        )
-        if m:
-            inject = craft_media_reaction("Will", m)
-
-    if random.random() > chance:
-        return False
-
-    addressed = author
+    addressed = author_label or discord_author_name
     rant = random.random() < RANT_CHANCE
 
     base_ctx, mem = recall_or_enrich_prompt(
@@ -255,6 +230,16 @@ async def will_handle_message(
         content,
         ["family_chat", "recent", "comfort", "gentle_topics"],
     )
+
+    inject = None
+    lower = content.lower()
+    if any(k in lower for k in ["anime", "game", "show", "music", "cosplay", "art", "photo", "coffee"]):
+        m = get_media_reference(
+            "Will",
+            mood_tags=["anime", "jrpg", "indie", "nintendo"],
+        )
+        if m:
+            inject = craft_media_reaction("Will", m)
 
     base = (
         f'Respond softly to {addressed} about: "{content}". '
